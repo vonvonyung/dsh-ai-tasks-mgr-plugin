@@ -1,9 +1,11 @@
 /**
  * AI 任务台 × DSH 插件 —— 浏览器半边（跑在 DSH 客户端里）。
  *
- * 两个挂点：
- *   ① rightbar              —— 「AI 任务台」面板：顶部一条健康条 + iframe 里是我们的整块面板（?embed=1 嵌入模式）
- *   ② settings.section      —— 设置里一节「AI 任务台」：后端地址、怎么起、出错怎么办
+ * 挂点（**别再用 `rightbar`**：那是「座位」单占位槽，DSH 自己的 sidebar-right 要占它，
+ * 谁先去注册谁就把对方顶掉 → 对方 apply 抛异常、整页白屏。踩过一次，见 README 第 7 条）：
+ *   ① 右侧栏页签：`sidebarRightTabs.register({id, kind})` 声明类型 +
+ *      `sidebar.right.pane.tab`（主体）/ `sidebar.right.pane.tab.title`（页签头）两个 keyed 槽
+ *   ② 设置里一节「AI 任务台」：`settings.section`
  *
  * 浏览器里看不见 Node：后端地址从宿主半边注册的 `/aitm-plugin/config` 拿（同源，直接 fetch）。
  */
@@ -15,8 +17,14 @@ window.__ModuleLoader__.load({
     const react = require('react');
     const jsx = require('react/jsx-runtime');
 
-    /** 客户端侧需要的服务：插槽注册表 */
-    const inject = ['slots'];
+    /** 客户端侧需要的服务：插槽注册表 + 右侧栏（页签类型表与打开页签的能力） */
+    const inject = ['slots', 'sidebarRight', 'sidebarRightTabs'];
+
+    /** 实现身份（tab 系统的唯一 id，也是 body/title 两个 keyed 槽的 key） */
+    const TAB_ID = 'dsh-plugin-aitm';
+    /** 类型判别符：openTab 用的名字 */
+    const TAB_KIND = 'aitm';
+    const TITLE = 'AI 任务台';
 
     const CONFIG_URL = '/aitm-plugin/config';
 
@@ -60,19 +68,18 @@ window.__ModuleLoader__.load({
     const DOT = (ok) => ({ width: 8, height: 8, borderRadius: 999, background: ok ? '#2ea043' : '#d29922', flex: 'none' });
     const LINK = { marginLeft: 'auto', textDecoration: 'underline', cursor: 'pointer', opacity: 0.8 };
 
-    /** ① 面板：健康条 + iframe（embed=1：隐藏我们自己的侧栏/顶栏，避免两层导航） */
+    /** ① 页签主体：健康条 + 视图切换 + iframe（?embed=1：藏掉我们自己的导航，避免两层） */
     function AitmPanel() {
       const [cfg, reload] = useAitmConfig();
       const [nonce, setNonce] = react.useState(0);
       const [view, setView] = react.useState('board');
       const ready = Boolean(cfg.base) && cfg.health?.ok;
       const src = cfg.base ? `${cfg.base}/?embed=1&view=${encodeURIComponent(view)}` : '';
-      // 注意：jsx(type, props, key) —— key 是第三个参数，不能塞进 props（塞了 React 会警告要用展开）
       const tab = (id, text) =>
         jsx.jsx(
           'a',
           {
-            style: { cursor: 'pointer', textDecoration: 'none', opacity: view === id ? 1 : 0.55, fontWeight: view === id ? 600 : 400 },
+            style: { cursor: 'pointer', textDecoration: 'none', opacity: view === id ? 1 : 0.55, fontWeight: view === id ? 600 : 400, fontSize: 12 },
             onClick: () => setView(id),
             children: text,
           },
@@ -103,7 +110,7 @@ window.__ModuleLoader__.load({
             ready
               ? jsx.jsx('iframe', {
                   key: `${nonce}-${view}`,
-                  title: 'AI 任务台',
+                  title: TITLE,
                   src,
                   style: { flex: 1, width: '100%', border: 'none', background: 'transparent', minHeight: 0 },
                 })
@@ -129,7 +136,12 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** ② 设置节 */
+    /** 页签头（右侧栏那一小条） */
+    function AitmTabTitle() {
+      return jsx.jsx('span', { children: TITLE });
+    }
+
+    /** 设置里的一节 */
     function AitmSection() {
       const [cfg, reload] = useAitmConfig();
       const row = (k, v) =>
@@ -142,7 +154,7 @@ window.__ModuleLoader__.load({
           k,
         );
       return jsx.jsxs('div', { className: 'aitm-settings-section', 'data-plugin': 'dsh-plugin-aitm', children: [
-        jsx.jsx('h3', { children: 'AI 任务台' }, 'h'),
+        jsx.jsx('h3', { children: TITLE }, 'h'),
         jsx.jsxs('div', { style: { marginTop: 6 }, children: [
           row('后端', cfg.base ?? '(自动拉起)'),
           row('健康', cfg.loading ? '检查中…' : cfg.health?.ok ? `正常 · ${cfg.health.actions} 个动作` : '不可用'),
@@ -155,19 +167,59 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      // 右侧栏面板（DSH 右侧栏的页签之一）
-      ctx.slots.inject('rightbar', () =>
-        ctx.slots.register({ name: 'rightbar', id: 'aitm', order: 30, label: () => 'AI 任务台', inject: () => ({}) }, AitmPanel),
+      // ① 右侧栏页签类型（kind → 打开时用；id → body/title 两个 keyed 槽认这个 key）
+      ctx.effect(
+        () =>
+          ctx.sidebarRightTabs.register({
+            id: TAB_ID,
+            kind: TAB_KIND,
+            priority: 'extension',
+            multiple: false,
+            title: () => TITLE,
+            guide: [{ id: 'open', order: 40, title: () => TITLE, description: () => '看板 / 日历 / 合集（只读）' }],
+          }),
+        'aitm.tab-type',
       );
-      // 设置节
-      ctx.slots.inject('settings.section', () =>
-        ctx.slots.register({ name: 'settings.section', id: 'aitm', order: 40, label: () => 'AI 任务台', inject: () => ({}) }, AitmSection),
+      // ② 页签主体 / 页签头
+      ctx.effect(
+        () =>
+          ctx.slots.inject('sidebar.right.pane.tab', () =>
+            ctx.slots.register({ name: 'sidebar.right.pane.tab', key: TAB_ID, inject: () => ({}) }, AitmPanel),
+          ),
+        'aitm.tab-body',
       );
+      ctx.effect(
+        () =>
+          ctx.slots.inject('sidebar.right.pane.tab.title', () =>
+            ctx.slots.register({ name: 'sidebar.right.pane.tab.title', key: TAB_ID, inject: () => ({}) }, AitmTabTitle),
+          ),
+        'aitm.tab-title',
+      );
+      // ③ 设置节
+      ctx.effect(
+        () =>
+          ctx.slots.inject('settings.section', () =>
+            ctx.slots.register({ name: 'settings.section', id: TAB_ID, order: 40, label: () => TITLE, inject: () => ({}) }, AitmSection),
+          ),
+        'aitm.settings-section',
+      );
+      // ④ 顺手把面板打开一次：只在右侧栏本来就一个页签都没开的时候（不抢用户已开的东西）
+      ctx.effect(() => {
+        const timer = setTimeout(() => {
+          try {
+            const open = ctx.sidebarRight?.openTabs?.getSnapshot?.() ?? [];
+            if (open.length === 0) ctx.sidebarRight.openTab(TAB_KIND);
+          } catch {
+            /* 打不开就算了，用户还能从右侧栏的「+」里进 */
+          }
+        }, 1500);
+        return () => clearTimeout(timer);
+      }, 'aitm.auto-open');
     }
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { AitmPanel, AitmSection };
+    exports.__components = { AitmPanel, AitmTabTitle, AitmSection };
     return module.exports;
   },
 });

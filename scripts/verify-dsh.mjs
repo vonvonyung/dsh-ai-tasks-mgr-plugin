@@ -1,6 +1,6 @@
 /**
- * 一条命令验完 M1 的四件事（都能在无浏览器的沙箱里跑）：
- *   ① 客户端半边离线渲染（假 window.__ModuleLoader__ + 假 ctx + react-dom/server）
+ * 一条命令验完 M1 的五件事（都能在无浏览器的沙箱里跑）：
+ *   ① 客户端半边离线渲染（假 window.__ModuleLoader__ + 假 ctx + react-dom/server）+ 挂点护栏（不占 rightbar）
  *   ② 插件激活 + 客户端半边进 __DSH_BOOT__ 图
  *   ③ 客户端分片送达（/plugins/??…/client.js → 200 且内容里有我们的挂点）
  *   ④ 端到端：假模型 → 工具 aitm_health → **真后端**（插件自己拉起的 AI 任务台）返回真数据
@@ -104,13 +104,29 @@ async function checkRender() {
   if (!check('模块加载协议（window.__ModuleLoader__.load）', Boolean(loaded), loaded?.id)) return;
 
   const regs = [];
+  const tabTypes = [];
   const ctx = {
     slots: { inject: (n, cb) => { cb(); return () => {}; }, register: (d, C) => { regs.push({ d, C }); return () => {}; } },
+    sidebarRightTabs: { register: (d) => { tabTypes.push(d); return () => {}; } },
+    sidebarRight: { openTab: () => {}, openTabs: { getSnapshot: () => [] } },
     effect: (f) => { const d = f(); return typeof d === 'function' ? d : () => {}; },
   };
   loaded.exports.apply(ctx);
-  check('注册 rightbar 面板', regs.some((r) => r.d.name === 'rightbar'));
+
+  const type = tabTypes[0];
+  check(
+    '注册右侧栏页签类型',
+    tabTypes.length === 1 && type.id === 'dsh-plugin-aitm' && type.kind === 'aitm',
+    type ? `id=${type.id} kind=${type.kind} priority=${type.priority}` : '',
+  );
+  check(
+    '页签 body / title 两个 keyed 槽（key = 类型 id）',
+    ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title'].every((n) => regs.some((r) => r.d.name === n && r.d.key === 'dsh-plugin-aitm')),
+    regs.filter((r) => String(r.d.name).startsWith('sidebar.right.')).map((r) => r.d.name).join(' / '),
+  );
   check('注册 settings.section', regs.some((r) => r.d.name === 'settings.section'));
+  // R9 回归护栏：rightbar 是单占位槽，DSH 自己的 sidebar-right 要占它；我们再去注册就会把对方顶掉
+  check('不占用单占位槽 rightbar（R9 根因）', !regs.some((r) => r.d.name === 'rightbar'));
 
   // 假 fetch：让 useAitmConfig 拿到「后端就绪」的答案（用完必须还原，否则后面真请求也会被它接走）
   const realFetch = globalThis.fetch;
@@ -123,6 +139,7 @@ async function checkRender() {
   const { renderToStaticMarkup } = require('react-dom/server');
   const html = regs.map((r) => renderToStaticMarkup(React.createElement(r.C, {}))).join('\n');
   check('组件能渲染成 HTML', html.includes('aitm-panel') && html.includes('aitm-settings-section'), `${html.length} 字节`);
+  check('面板离线态给人话（后端没起来时不是白屏）', /正在拉起后端|后端没起来/.test(html));
   globalThis.fetch = realFetch;
 }
 

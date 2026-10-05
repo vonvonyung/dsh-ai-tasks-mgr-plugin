@@ -50,7 +50,7 @@
 ## 验证
 
 ```bash
-node scripts/verify-dsh.mjs     # ① 离线渲染 ② 激活 ③ boot 图+分片送达 ④ 端到端真数据
+node scripts/verify-dsh.mjs     # 11 项：离线渲染 + 挂点护栏（不占 rightbar）+ 激活 + boot 图 + 分片送达 + 端到端真数据
 ```
 
 ## 实现要点（踩过的坑，别踩第二遍）
@@ -63,6 +63,21 @@ node scripts/verify-dsh.mjs     # ① 离线渲染 ② 激活 ③ boot 图+分�
 4. **工具输出 schema 的 `required` 写在属性上**（对象级 `required` 会在激活期抛 `JsonSchemaError`）。
 5. **launcher 参数必须排在 app 参数前**：`--profile/--patch` 在 `--json` 之前。
 6. **客户端半边看不见 Node**：后端地址走宿主半边注册的 `/aitm-plugin/config`（同源 fetch）。
+7. **别碰 `rightbar` —— 那是「座位」单占位槽**（R9 白屏事故根因）。DSH 自己的
+   `@deepseek-ai/dsh-client-ui-sidebar-right` 要注册 `rightbar`；谁先注册，第二个就在 apply 里抛
+   `single slot "rightbar" already has a registration at priority 0` → 对方 failed → 依赖它的
+   `sessions/uiSession` 全 pending → `web boot: N entries did not activate` + 白屏。
+   **正确挂法＝注册自己的右侧栏页签类型**（下一条）。
+8. **右侧栏页签扩展点（三条一起才生效）**：
+   ```js
+   ctx.sidebarRightTabs.register({ id: 'dsh-plugin-aitm', kind: 'aitm', priority: 'extension',
+     multiple: false, title: () => 'AI 任务台',
+     guide: [{ id: 'open', order: 40, title: () => 'AI 任务台', description: () => '…' }] });
+   ctx.slots.inject('sidebar.right.pane.tab',       () => ctx.slots.register({ name: 'sidebar.right.pane.tab',       key: 'dsh-plugin-aitm' }, Body));
+   ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({ name: 'sidebar.right.pane.tab.title', key: 'dsh-plugin-aitm' }, Title));
+   ```
+   两个 keyed 槽的 `key` ＝ 类型的 **`id`**（不是 `kind`）；开面板用 `ctx.sidebarRight.openTab('<kind>')`
+   （`openTab` 属于「当前会话」，没有会话时不要调；用户也能从右侧栏的引导页点进来）。
 
 ## 面板里放什么
 
