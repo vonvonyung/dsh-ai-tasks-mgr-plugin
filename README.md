@@ -39,18 +39,34 @@
    | `AITM_SPAWN` | `0` = 只连不起（连不上就报错） | `1` |
    | `AITM_DEBUG` | `1` = 接住子进程日志（**会让 headless 不退出，只在手工调试时开**） | 空 |
 
-## 三个只读工具（模型可调用）
+## 五个工具（模型可调用）
 
-| 工具 | 干的事 |
-|---|---|
-| `aitm_health` | 后端健康：action 数 / 数据目录 / 后端地址（面板打不开先调它） |
-| `aitm_idea_list` | 列想法（status / q / limit，默认 20 条）+ 各状态计数 |
-| `aitm_feed_today` | 今日热榜条数与收藏数（读快照，不触发抓取） |
+| 工具 | 读写 | 干的事 |
+|---|---|---|
+| `aitm_health` | 只读 | 后端健康：action 数 / 数据目录 / 后端地址（面板打不开先调它） |
+| `aitm_idea_list` | 只读 | 列想法（status / q / limit，默认 20 条）+ 各状态计数 |
+| `aitm_feed_today` | 只读 | 今日热榜条数与收藏数（读快照，不触发抓取） |
+| `aitm_idea_create` | **写** | 在灵感箱新建一条想法（标题必填；描述 / 标签 / 优先级可选） |
+| `aitm_idea_set_status` | **写** | 改想法的状态（核心校验合法流转，非法流转会带着原因返回） |
+
+**写操作走审批闸**（`tools/pre-execute`，M2 第一步）：
+
+- 默认**每次写都弹审批卡**，用户在 DSH 界面点「同意」才真正落地 —— 闸门在
+  `apply()` 里注册（`ctx.on('tools/pre-execute', …)`），返回 `{kind:'ask', displayReason:{en,zh}}`；
+- 顺序上**先问下游**（沙箱 / 权限档 / 别的插件）：下游拒了就以它为准，不会绕开它们；
+- 缺参（比如没标题）直接 `deny`，不浪费用户的点击；已取消的调用 `cancel`；
+- **没有审批通道时 fail-closed**：headless 里模型会收到
+  `Error: tool "aitm_idea_create" requires approval, but no approval channel is available`，
+  一条也不会写进去（verify ⑧ 就测这个）；
+- 自用/自动化想跳过弹卡：`AITM_APPROVE=allow`（**风险自负**，文档里也说清了）；verify ⑨ 用它
+  证明「放行后确实写得进去」。
 
 ## 验证
 
 ```bash
-node scripts/verify-dsh.mjs     # 14 项：离线渲染 + 挂点护栏（不占 rightbar）+ 旧后端护栏 + 起前自检 + 激活 + boot 图 + 分片送达 + 端到端真数据
+node scripts/verify-dsh.mjs     # 23 项：离线渲染 + 挂点护栏（不占 rightbar）+ 旧后端护栏 + 起前自检
+                                #        + 审批闸（写→ask / 只读→放行 / 缺参→deny / 下游优先 / 取消）
+                                #        + 激活 + boot 图 + 分片送达 + 端到端真数据 + 写操作 fail-closed + 放行后落盘
 node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起后端、缺什么、后端日志尾巴
 ```
 

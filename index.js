@@ -3,7 +3,8 @@
  *
  * 职责（M1）：
  *   ① 桥：确保有一个可用的 AI 任务台后端（默认自己 spawn 现有 web 宿主，只绑回环）
- *   ② 工具：三个只读工具给模型用（health / idea_list / feed_today）
+ *   ② 工具：三个只读（health / idea_list / feed_today）+ 两个写（idea_create / idea_set_status，
+ *      写操作一律过 `tools/pre-execute` 审批闸：用户点了「同意」才落地）
  *   ③ 给浏览器半边递地址：注册 /aitm-plugin/config 路由（客户端拿不到 Node 环境变量）
  *
  * M2 会把「桥」换成插件进程内的 L3 服务（core 直接 import），工具与路由的接口不变。
@@ -36,6 +37,19 @@ const DEFAULTS = {
   repo: REPO_DEFAULT,
   url: (process.env.AITM_URL ?? '').replace(/\/+$/, ''),
   spawn: process.env.AITM_SPAWN !== '0',
+  /**
+   * 写操作的审批策略（`tools/pre-execute` 里那道闸）：
+   *   ask（默认）—— 每次写都弹审批卡，用户点了才落地
+   *   allow      —— 不弹，直接写（自用/自动化；`AITM_APPROVE=allow`，风险自负）
+   * 只读工具不受影响。
+   */
+  approve: (process.env.AITM_APPROVE ?? 'ask').toLowerCase(),
+};
+
+/** 写工具（要过审批闸）与它们的人话描述 */
+const WRITE_TOOLS = {
+  aitm_idea_create: (a) => `在想法箱新建一条：「${String(a?.title ?? '(缺标题)')}」`,
+  aitm_idea_set_status: (a) => `把想法 ${String(a?.id ?? '(缺 id)')} 的状态改成 ${String(a?.status ?? '(缺状态)')}`,
 };
 
 /**
@@ -394,6 +408,7 @@ export function diagnose() {
     url: DEFAULTS.url || null,
     spawn: DEFAULTS.spawn,
     apiRevRequired: REQUIRED_API_REV,
+    approve: DEFAULTS.approve,
     registry: PIDFILE,
     backendLog: BACKEND_LOG,
     node: process.version,
@@ -631,6 +646,123 @@ export function apply(ctx) {
         };
       },
     }),
+  );
+
+  /* -------- ③ 写工具（要过下面的审批闸；只在用户点了「同意」后才会真正落地） -------- */
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_idea_create',
+      description:
+        '在 AI 任务台的灵感箱里新建一条想法（写操作，需要用户审批）。标题一句话；描述里带上来源链接/上下文。',
+      parameters: {
+        title: { type: 'string', description: '一句话标题（必填）。', required: true },
+        description: { type: 'string', description: '正文：为什么、来源、期望结果。' },
+        tags: { type: 'array', items: { type: 'string' }, description: '标签，如 ["新闻灵感"]。' },
+        priority: { type: 'string', description: '优先级 p0/p1/p2/p3，默认 p2。' },
+        repoId: { type: 'string', description: '关到哪个仓库（省略 = 不关仓库）。' },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            id: { type: 'string' },
+            title: { type: 'string' },
+            status: { type: 'string' },
+            error: { type: 'string' },
+          },
+        },
+        render: (_a, v) => [{ type: 'text', text: v.ok ? `已记进想法箱：${v.title}（${v.id}，状态 ${v.status}）` : `没写成：${v.error}` }],
+      },
+      async execute(args) {
+        const title = String(args.title ?? '').trim();
+        if (!title) return { ok: false, error: '标题不能为空' };
+        try {
+          const idea = await call('idea.create', {
+            title,
+            ...(args.description ? { description: String(args.description) } : {}),
+            ...(Array.isArray(args.tags) && args.tags.length ? { tags: args.tags.map(String) } : {}),
+            ...(args.priority ? { priority: String(args.priority) } : {}),
+            ...(args.repoId ? { repoId: String(args.repoId) } : {}),
+          });
+          return { ok: true, id: idea?.id, title: idea?.title ?? title, status: idea?.status ?? 'inbox' };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_idea_set_status',
+      description:
+        '改一条想法的状态（写操作，需要用户审批）。合法流转：inbox→scoping/ready/archived；scoping→ready；ready→developing；developing→review；review→done。',
+      parameters: {
+        id: { type: 'string', description: '想法 id（可先用 aitm_idea_list 查）。', required: true },
+        status: { type: 'string', description: '目标状态：scoping/ready/developing/review/done/archived。', required: true },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            ok: { type: 'boolean', required: true },
+            id: { type: 'string' },
+            title: { type: 'string' },
+            status: { type: 'string' },
+            error: { type: 'string' },
+          },
+        },
+        render: (_a, v) => [
+          { type: 'text', text: v.ok ? `已改：${v.title ?? v.id} → ${v.status}` : `没改成：${v.error}` },
+        ],
+      },
+      async execute(args) {
+        const id = String(args.id ?? '').trim();
+        const status = String(args.status ?? '').trim();
+        if (!id || !status) return { ok: false, error: 'id 与 status 都必填' };
+        try {
+          const idea = await call('idea.setStatus', { id, status });
+          return { ok: true, id: idea?.id ?? id, title: idea?.title, status: idea?.status ?? status };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  /* -------- ④ 审批闸：写操作一律先过 `tools/pre-execute` -------- */
+  ctx.effect(
+    () =>
+      ctx.on('tools/pre-execute', async (exec, next) => {
+        const describe = WRITE_TOOLS[exec?.name];
+        if (!describe) return next(); // 只读工具：放行（下游的沙箱/权限策略照旧生效）
+        if (exec.signal?.aborted) return { kind: 'cancel' };
+        // 明显不合法的入参：直接拒，别浪费用户的点击（模型看到原因会自己修）
+        const a = exec.arguments ?? {};
+        if (exec.name === 'aitm_idea_create' && !String(a.title ?? '').trim()) {
+          return { kind: 'deny', reason: 'aitm: aitm_idea_create 缺 title' };
+        }
+        if (exec.name === 'aitm_idea_set_status' && (!String(a.id ?? '').trim() || !String(a.status ?? '').trim())) {
+          return { kind: 'deny', reason: 'aitm: aitm_idea_set_status 缺 id 或 status' };
+        }
+        // 先让下游（沙箱 / 权限档 / 别的插件）表态：它要是拒了就以它为准
+        const downstream = await next();
+        if (downstream.kind !== 'allow') return downstream;
+        if (DEFAULTS.approve === 'allow') return downstream; // 显式关掉审批（AITM_APPROVE=allow）
+        const detail = describe(a);
+        return {
+          kind: 'ask',
+          reason: `AI 任务台写操作：${detail}（仓库 ${DEFAULTS.repo}）`,
+          displayReason: {
+            en: `AI Tasks write: ${detail}`,
+            zh: `AI 任务台写操作：${detail}`,
+          },
+        };
+      }),
+    'aitm.write-gate',
   );
 
   // DSH 卸载插件时收掉我们拉起的后端

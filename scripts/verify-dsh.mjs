@@ -2,6 +2,7 @@
  * 一条命令验完 M1 的五件事（都能在无浏览器的沙箱里跑）：
  *   ① 客户端半边离线渲染（假 window.__ModuleLoader__ + 假 ctx + react-dom/server）+ 挂点护栏（不占 rightbar）
  *   ⑤ 旧后端护栏（假一个没有 apiRev 的后端 → 必须被拒）⑥ 起前自检（不是仓库的路径 → 当场拦下）
+ *   ⑦ 写操作审批闸（离线：写→ask、只读→放行、缺参→deny；端到端：headless 无审批通道 → 写不落地）
  *   ② 插件激活 + 客户端半边进 __DSH_BOOT__ 图
  *   ③ 客户端分片送达（/plugins/??…/client.js → 200 且内容里有我们的挂点）
  *   ④ 端到端：假模型 → 工具 aitm_health → **真后端**（插件自己拉起的 AI 任务台）返回真数据
@@ -144,6 +145,49 @@ async function checkRender() {
   check('组件能渲染成 HTML', html.includes('aitm-panel') && html.includes('aitm-settings-section'), `${html.length} 字节`);
   check('面板离线态给人话（后端没起来时不是白屏）', /正在拉起后端|后端没起来/.test(html));
   globalThis.fetch = realFetch;
+}
+
+/* ---------------- ⑦ 审批闸（离线：直接调 tools/pre-execute 的处理器）---------------- */
+async function checkWriteGate() {
+  console.log('⑦ 写操作审批闸（tools/pre-execute）');
+  let loaded = null;
+  globalThis.window = { __ModuleLoader__: { load({ id, factory }) { loaded = { id, exports: factory(require) }; } } };
+  await import(`${pathToFileURL(path.join(ROOT, 'client.js')).href}?client=${String(Date.now())}`); // 只为了拿 require 的 react 环境
+
+  // 重新加载宿主半边，抓它注册的钩子与工具
+  const regs = { hooks: [], tools: [] };
+  const ctx = {
+    tools: { register: (t) => regs.tools.push(t), on: (name, fn, opts) => { regs.hooks.push({ name, fn, opts }); return () => {}; } },
+    on: (name, fn, opts) => { regs.hooks.push({ name, fn, opts }); return () => {}; },
+    slots: { inject: () => () => {}, register: () => () => {} },
+    effect: (f) => { const d = f(); return typeof d === 'function' ? d : () => {}; },
+    inject: () => {},
+    logger: { info: () => {}, warn: () => {} },
+    webServer: undefined,
+  };
+  const host = await import(`${pathToFileURL(path.join(ROOT, 'index.js')).href}?gate=${String(Date.now())}`);
+  host.apply(ctx);
+
+  const names = regs.tools.map((t) => t.name ?? t.definition?.name).filter(Boolean);
+  check('两个写工具都注册了', names.includes('aitm_idea_create') && names.includes('aitm_idea_set_status'), names.join(', '));
+
+  const gate = regs.hooks.find((h) => h.name === 'tools/pre-execute')?.fn;
+  if (!check('注册了 tools/pre-execute 闸门', Boolean(gate))) return;
+  const allow = async () => ({ kind: 'allow' });
+  const okCreate = await gate({ name: 'aitm_idea_create', arguments: { title: '测试想法' }, signal: { aborted: false } }, allow);
+  check('写操作 → ask（必须用户点头）', okCreate?.kind === 'ask', `${okCreate?.kind ?? '?'} / ${okCreate?.displayReason?.zh ?? ''}`);
+  const readTool = await gate({ name: 'aitm_idea_list', arguments: {}, signal: { aborted: false } }, allow);
+  check('只读工具 → 放行', readTool?.kind === 'allow');
+  const badCreate = await gate({ name: 'aitm_idea_create', arguments: { title: '  ' }, signal: { aborted: false } }, allow);
+  check('缺标题 → deny（不浪费用户点击）', badCreate?.kind === 'deny');
+  let downstreamCalled = false;
+  const downstreamDeny = await gate({ name: 'aitm_idea_create', arguments: { title: 'x' }, signal: { aborted: false } }, async () => {
+    downstreamCalled = true;
+    return { kind: 'deny', reason: '沙箱不允许' };
+  });
+  check('下游拒绝时以它为准', downstreamCalled && downstreamDeny?.kind === 'deny');
+  const aborted = await gate({ name: 'aitm_idea_create', arguments: { title: 'x' }, signal: { aborted: true } }, allow);
+  check('已取消的调用 → cancel', aborted?.kind === 'cancel');
 }
 
 /* ---------------- ⑤ 旧后端护栏（不用起 DSH：假一个老版本的后端）---------------- */
@@ -307,6 +351,105 @@ async function checkDsh() {
   //       ③ 没有因为我们拉起的长驻子进程而卡住不退出
   const hasRealData = /63 个 action/.test(toolResult);
   check('④ 端到端：工具拿到真后端数据', code === 0 && hasRealData, `${toolResult.slice(0, 160)}（exit=${code}）`);
+
+  // ⑧⑨ 写操作：无审批通道必须**不落地**（fail-closed）；显式放行后必须**真写得进去**
+  //     用独立 AI_TASKS_HOME + 临时挪走登记表 → 逼出一个只服务这次运行的后端，然后看磁盘。
+  /** 跑一次「让假模型调 aitm_idea_create」的独立 headless 会话，返回它对磁盘做了什么 */
+  const soloWriteRun = async ({ approve, title }) => {
+    const soloHome = fs.mkdtempSync(path.join(os.tmpdir(), 'aitm-solo-'));
+    const regPath = path.join(os.tmpdir(), 'aitm-dsh-backend.json');
+    const savedReg = fs.existsSync(regPath) ? fs.readFileSync(regPath, 'utf8') : null;
+    if (savedReg !== null) fs.rmSync(regPath); // 别复用别的实例（那样数据目录就不是 soloHome）
+    const stubPort = await freePort();
+    start(process.execPath, [path.join(ROOT, 'test', 'stub-llm.mjs')], {
+      env: {
+        ...process.env,
+        STUB_PORT: String(stubPort),
+        STUB_LOG: path.join(DSH_HOME, `stub-${String(stubPort)}.jsonl`),
+        STUB_TOOL: 'aitm_idea_create',
+        STUB_ARGS: JSON.stringify({ title }),
+      },
+    });
+    await waitFor(
+      () =>
+        new Promise((resolve) => {
+          const sock = net.connect(stubPort, '127.0.0.1');
+          sock.on('connect', () => { sock.destroy(); resolve(true); });
+          sock.on('error', () => { sock.destroy(); resolve(false); });
+        }),
+      10_000,
+      '假模型没起来',
+    );
+    const patchStub = path.join(DSH_HOME, `stub-${String(stubPort)}.patch.yml`);
+    fs.writeFileSync(
+      patchStub,
+      [ // 与 ④ 的假模型 patch 同构，只换端口
+        '- id: llm-pi-ai',
+        '  config:',
+        '    providers:',
+        '      stub:',
+        '        apiKeyEnv: STUB_API_KEY',
+        '        displayName: Stub',
+        '        api: openai-completions',
+        `        baseURL: http://127.0.0.1:${String(stubPort)}/v1`,
+        '        models:',
+        '          - id: stub-model',
+        '            name: Stub',
+        '            contextWindow: 32000',
+        '            maxTokens: 2048',
+        '            input: [text]',
+        '            reasoningEfforts: false',
+        '- id: agent-default-model',
+        '  config:',
+        '    provider: stub',
+        '    model: stub-model',
+        '',
+      ].join('\n'),
+    );
+    const child = spawn(process.execPath, dshArgs(['--profile', 'headless', '--patch', patchStub, '--patch', PATCH, '--json', '写一条想法']), {
+      cwd: ROOT,
+      env: { ...process.env, DSH_HOME, AITM_REPO: REPO, STUB_API_KEY: 'stub', AI_TASKS_HOME: soloHome, ...(approve ? { AITM_APPROVE: approve } : {}) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.push(child);
+    let out = '';
+    child.stdout.on('data', (b) => (out += String(b)));
+    child.stderr.on('data', (b) => (out += String(b)));
+    const code = await new Promise((resolve) => child.on('exit', resolve));
+    if (savedReg !== null) fs.writeFileSync(regPath, savedReg); // 还原，收尾还要按它清后端
+
+    const found = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(abs);
+        else if (entry.isFile() && fs.readFileSync(abs, 'utf8').includes(title)) found.push(abs);
+      }
+    };
+    try {
+      walk(soloHome);
+    } catch {
+      /* 目录没了也算没写 */
+    }
+    fs.rmSync(soloHome, { recursive: true, force: true });
+    return { found, out, code };
+  };
+
+  const negative = await soloWriteRun({ approve: null, title: 'verify 不应该写进去的想法' });
+  if (process.env.SHOW_HEADLESS === '1') console.log('[headless 原文]', negative.out.slice(-1500));
+  const blocked = /requires approval|no approval channel|deny|拒绝/i.test(negative.out);
+  check(
+    '⑧ fail-closed：headless 无审批通道 → 写操作不落地',
+    negative.found.length === 0 && blocked,
+    `磁盘命中 ${String(negative.found.length)} 处；输出${blocked ? '说了「需要审批」' : '**没说**需要审批'}（exit=${String(negative.code)}）`,
+  );
+
+  const positive = await soloWriteRun({ approve: 'allow', title: 'verify 放行后应该写进去的想法' });
+  check(
+    '⑨ 显式放行（AITM_APPROVE=allow）→ 写操作真的落盘',
+    positive.found.length > 0,
+    `磁盘命中 ${String(positive.found.length)} 处（exit=${String(positive.code)}）`,
+  );
 }
 
 /* ---------------- 收尾 ---------------- */
@@ -314,6 +457,7 @@ try {
   await checkRender();
   await checkStaleBackend();
   await checkRepoPreflight();
+  await checkWriteGate();
   await checkDsh();
 } catch (err) {
   check('验证过程未抛异常', false, String(err?.message ?? err));
