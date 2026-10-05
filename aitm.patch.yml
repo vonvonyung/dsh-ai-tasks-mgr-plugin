@@ -1,10 +1,4 @@
-# 把 AI 任务台插件挂进 DSH（开发期用 overlay，不动 profile 本身）
-# 用法：dsh --profile web --patch /abs/path/to/aitm.patch.yml
-#
-# 注意：
-#   ① patch 只能「定位已有 id」；新增插件要用**不带 id** 的 insert（带 id 的 insert 是往那个 group 里追加）。
-#   ② 下面的 name 必须是**本机绝对路径**：换机器/Windows 要改成你机器上的路径。
-#      （scripts/verify-dsh.mjs 会按当前机器自动生成一份同内容的 patch，跑 verify 时以它为准。）
+# 由 verify-dsh.mjs 生成；手工用也可以改这里的路径
 - insert:
     - id: aitm-plugin
-      name: '/home/user/ai-tasks-mgr/dsh-plugin/index.js'
+      name: "/home/user/ai-tasks-mgr/dsh-plugin/index.js"

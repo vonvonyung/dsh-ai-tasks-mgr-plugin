@@ -67,15 +67,16 @@ window.__ModuleLoader__.load({
       const [view, setView] = react.useState('board');
       const ready = Boolean(cfg.base) && cfg.health?.ok;
       const src = cfg.base ? `${cfg.base}/?embed=1&view=${encodeURIComponent(view)}` : '';
+      // 注意：jsx(type, props, key) —— key 是第三个参数，不能塞进 props（塞了 React 会警告要用展开）
       const tab = (id, text) =>
         jsx.jsx(
           'a',
           {
-            key: id,
             style: { cursor: 'pointer', textDecoration: 'none', opacity: view === id ? 1 : 0.55, fontWeight: view === id ? 600 : 400 },
             onClick: () => setView(id),
+            children: text,
           },
-          text,
+          id,
         );
       return jsx.jsxs(
         'div',
