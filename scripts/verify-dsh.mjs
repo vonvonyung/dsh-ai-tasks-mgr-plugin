@@ -8,7 +8,7 @@
  * 用法：node scripts/verify-dsh.mjs        （退出码 0 = 全过）
  * 环境：AITM_REPO 指向 AI 任务台仓库（默认 /home/user/ai-tasks-mgr）
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import net from 'node:net';
@@ -20,7 +20,14 @@ const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = process.env.AITM_REPO ?? path.resolve(ROOT, '..');
 const DSH_HOME = process.env.DSH_HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-verify-'));
-const DSH_BIN = path.join(ROOT, 'node_modules', '.bin', 'dsh');
+/**
+ * 起 dsh 一律走 `process.execPath <包里的 lib/bin.js>`：
+ * Windows 上 `.bin/dsh` 是 sh 脚本、`.bin/dsh.cmd` 是批处理垫片 —— Node ≥20.12 直接 spawn 它们会
+ * EINVAL（本项目在面板那边也踩过同一坑）。直跑 JS 入口两条平台都稳。
+ */
+const DSH_PKG = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh');
+const DSH_ENTRY = path.join(DSH_PKG, 'lib', 'bin.js');
+const dshArgs = (rest) => [DSH_ENTRY, ...rest];
 const PATCH = path.join(ROOT, 'aitm.patch.yml');
 
 const results = [];
@@ -43,16 +50,26 @@ const freePort = () =>
 const children = [];
 function killAll() {
   for (const c of children) {
-    try { c.kill('SIGTERM'); } catch { /* 忽略 */ }
+    if (process.platform === 'win32' && c.pid) {
+      try { spawnSync('taskkill', ['/pid', String(c.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch { /* 没了 */ }
+    } else {
+      try { c.kill('SIGTERM'); } catch { /* 忽略 */ }
+    }
   }
   children.length = 0;
   // 被 SIGTERM 砍掉的 dsh 不会跑 'exit' 钩子 → 它拉起的后端会留下。
   // 插件把 pid 登记在临时目录里（多个会话复用同一个后端），这里按它整组收尾。
   try {
-    const reg = JSON.parse(fs.readFileSync(path.join(os.tmpdir(), 'aitm-dsh-backend.json'), 'utf8'));
+    const file = path.join(os.tmpdir(), 'aitm-dsh-backend.json');
+    const reg = JSON.parse(fs.readFileSync(file, 'utf8'));
     if (reg?.pid) {
-      try { process.kill(-reg.pid, 'SIGTERM'); } catch { try { process.kill(reg.pid, 'SIGTERM'); } catch { /* 没了 */ } }
-      fs.unlinkSync(path.join(os.tmpdir(), 'aitm-dsh-backend.json'));
+      if (process.platform === 'win32') {
+        // Windows 没有进程组信号：taskkill /T 连子孙一起收
+        spawnSync('taskkill', ['/pid', String(reg.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+      } else {
+        try { process.kill(-reg.pid, 'SIGTERM'); } catch { try { process.kill(reg.pid, 'SIGTERM'); } catch { /* 没了 */ } }
+      }
+      fs.unlinkSync(file);
     }
   } catch {
     /* 没有登记表 = 没起过后端 */
@@ -111,8 +128,8 @@ async function checkRender() {
 
 /* ---------------- ②③④ 需要真的 DSH ---------------- */
 async function checkDsh() {
-  if (!fs.existsSync(DSH_BIN)) {
-    check('DSH 已安装（node_modules/.bin/dsh）', false, '先 npm install');
+  if (!fs.existsSync(DSH_ENTRY)) {
+    check('DSH 已安装（node_modules/@deepseek-ai/dsh）', false, '先 npm install');
     return;
   }
   // patch 里的 name 必须是本机绝对路径（换机器/Windows 要改）
@@ -122,7 +139,7 @@ async function checkDsh() {
   );
 
   const port = await freePort();
-  const web = start(DSH_BIN, ['--profile', 'web', '--patch', PATCH, '--no-open', '--port', String(port)], {
+  const web = start(process.execPath, dshArgs(['--profile', 'web', '--patch', PATCH, '--no-open', '--port', String(port)]), {
     env: { ...process.env, DSH_HOME, AITM_REPO: REPO },
   });
   const url = await waitFor(() => /http:\/\/127\.0\.0\.1:\d+\/\?token=[\w-]+/.exec(web.out)?.[0], 60_000, 'dsh web 起不来');
@@ -187,7 +204,7 @@ async function checkDsh() {
     ].join('\n'),
   );
 
-  const headless = spawn(DSH_BIN, ['--profile', 'headless', '--patch', patchStub, '--patch', PATCH, '--json', '健康检查'], {
+  const headless = spawn(process.execPath, dshArgs(['--profile', 'headless', '--patch', patchStub, '--patch', PATCH, '--json', '健康检查']), {
     cwd: ROOT,
     env: { ...process.env, DSH_HOME, AITM_REPO: REPO, STUB_API_KEY: 'stub' },
     stdio: ['ignore', 'pipe', 'pipe'],

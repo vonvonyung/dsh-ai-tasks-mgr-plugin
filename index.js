@@ -8,7 +8,7 @@
  *
  * M2 会把「桥」换成插件进程内的 L3 服务（core 直接 import），工具与路由的接口不变。
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -82,8 +82,19 @@ function pidAlive(pid) {
   }
 }
 
-/** 收掉一个进程**组**：只 kill 进程本身的话，它再 spawn 出来的东西（npx/vite/…）会活下来 */
+/**
+ * 收掉一个进程**组**：只 kill 进程本身的话，它再 spawn 出来的东西（npx/vite/…）会活下来。
+ * POSIX：负 pid 收整组；Windows 没有「进程组信号」，得用 `taskkill /T /F` 连子孙一起收。
+ */
 function killGroup(pid, signal = 'SIGTERM') {
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    } catch {
+      /* 已经没了 */
+    }
+    return;
+  }
   try {
     process.kill(-pid, signal);
   } catch {
