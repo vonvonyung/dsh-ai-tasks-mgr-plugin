@@ -1,0 +1,25 @@
+{
+  "name": "dsh-plugin-aitm",
+  "version": "0.1.0-m1",
+  "private": true,
+  "type": "module",
+  "description": "AI 任务台 × DeepSeek Harness 插件（M1：只读面板 + 三个只读工具）",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "verify": "node scripts/verify-dsh.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}
