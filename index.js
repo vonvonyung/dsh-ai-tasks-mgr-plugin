@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
@@ -188,17 +189,19 @@ export async function ensureBase() {
     if (!DEFAULTS.spawn) throw new Error(`没配 AITM_URL，且 AITM_SPAWN=0：连不上后端（${base}）`);
 
     const debug = process.env.AITM_DEBUG === '1';
-    const child = spawn(process.execPath, ['scripts/dev-web.mjs', '--prod'], {
-      cwd: DEFAULTS.repo,
-      env: { ...process.env, AITM_PORT: String(port), AITM_VITE_PORT: String(vitePort), AITM_BIND_ALL: '' },
+    const supervisor = path.join(path.dirname(fileURLToPath(import.meta.url)), 'supervisor.mjs');
+    // 后端交给看门狗起（见 supervisor.mjs）：DSH 被强杀时收尾钩子不跑，
+    // 由看门狗盯着本进程的 pid 来收后端 —— 这样「关掉 DSH 不留后端」在 Ctrl+C / 强杀下也成立。
+    const child = spawn(process.execPath, [supervisor, String(process.pid), DEFAULTS.repo, String(port), String(vitePort), PIDFILE], {
       // stdio 用 ignore + unref：否则这个长驻子进程会把 DSH 的 headless 进程「钉」住不退出
       // （实测过：一次 headless 跑完 turn 也不结束，直到超时）。要看子进程日志就 AITM_DEBUG=1。
       stdio: debug ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'ignore', 'ignore'],
-      // detached：让子进程自成进程组，收尾时能整组干掉（npx/vite 这类孙进程不会活下来）
+      // detached：自成进程组，收尾时能整组干掉（看门狗 + 后端 + vite 一起走）
       detached: true,
     });
     state.child = child;
     child.unref?.();
+    // 登记的是**看门狗**的 pid（收它 = 连后端整棵树一起收）
     writeRegistry({ pid: child.pid, base, repo: DEFAULTS.repo, at: Date.now() });
     if (debug) {
       child.stdout?.on('data', (b) => note(`[host] ${String(b).trim()}`));
