@@ -74,6 +74,9 @@ window.__ModuleLoader__.load({
       const [nonce, setNonce] = react.useState(0);
       const [view, setView] = react.useState('board');
       const ready = Boolean(cfg.base) && cfg.health?.ok;
+      // 后端身份：老实例（apiRev 不够）不能装作可用 —— 否则工具会报「未知接口：feed.get」
+      const rev = cfg.identity?.apiRev ?? cfg.health?.apiRev ?? null;
+      const stale = cfg.error ? /旧版|apiRev/.test(cfg.error) : rev !== null && rev < (cfg.apiRevRequired ?? 2);
       const src = cfg.base ? `${cfg.base}/?embed=1&view=${encodeURIComponent(view)}` : '';
       const tab = (id, text) =>
         jsx.jsx(
@@ -119,12 +122,19 @@ window.__ModuleLoader__.load({
                   {
                     style: { padding: 16, fontSize: 12.5, lineHeight: 1.7, opacity: 0.85 },
                     children: [
-                      cfg.loading ? '正在拉起后端（首次启动要构建一次界面，约 3–5 秒）…' : 'AI 任务台后端没起来。',
+                      cfg.loading
+                        ? '正在拉起后端（首次启动要构建一次界面，约 3–5 秒）…'
+                        : stale
+                          ? '连上的后端是旧版，这个面板用不了。'
+                          : 'AI 任务台后端没起来。',
                       !cfg.loading && cfg.error ? jsx.jsx('div', { style: { marginTop: 6, opacity: 0.8 }, children: `原因：${cfg.error}` }) : null,
                       !cfg.loading && !cfg.error
                         ? jsx.jsx('div', {
                             style: { marginTop: 6, opacity: 0.8 },
-                            children: '检查 AITM_REPO 是否指向 AI 任务台仓库，以及那个仓库能不能跑 `node scripts/dev-web.mjs --prod`。',
+                            children: stale
+                              ? `这个实例是 ${cfg.identity?.version ?? '未知版本'}（apiRev=${String(rev)}，需要 ≥ ${String(cfg.apiRevRequired ?? 2)}）。` +
+                                '处理：清掉 %TEMP%/aitm-dsh-backend.json 并确认没有遗留的 dev-web 进程，然后确认 AITM_REPO 指向最新仓库（已 git pull）再重启 DSH。'
+                              : '检查 AITM_REPO 是否指向 AI 任务台仓库，以及那个仓库能不能跑 `node scripts/dev-web.mjs --prod`。',
                           })
                         : null,
                     ],
@@ -153,14 +163,22 @@ window.__ModuleLoader__.load({
           ] },
           k,
         );
+      const rev = cfg.identity?.apiRev ?? cfg.health?.apiRev ?? null;
+      const revRequired = cfg.apiRevRequired ?? 2;
+      const stale = rev !== null && rev < revRequired;
       return jsx.jsxs('div', { className: 'aitm-settings-section', 'data-plugin': 'dsh-plugin-aitm', children: [
         jsx.jsx('h3', { children: TITLE }, 'h'),
         jsx.jsxs('div', { style: { marginTop: 6 }, children: [
           row('后端', cfg.base ?? '(自动拉起)'),
           row('健康', cfg.loading ? '检查中…' : cfg.health?.ok ? `正常 · ${cfg.health.actions} 个动作` : '不可用'),
+          row('版本', cfg.identity?.version ? `${cfg.identity.version}（apiRev=${String(rev ?? '?')}，需要 ≥ ${String(revRequired)}）` : cfg.base ? '旧版（health 里没有身份字段）' : '—'),
+          row('数据目录', cfg.identity?.dataDir ?? cfg.health?.dataDir ?? '—'),
           row('仓库', cfg.repo ?? '—'),
           row('错误', cfg.error ?? '无'),
         ] }, 'rows'),
+        stale
+          ? jsx.jsx('p', { style: { fontSize: 12, color: '#d1242f', marginTop: 8 }, children: '后端版本不匹配：这个实例没有 feed.* 接口，面板与工具都会失败。按上面的处理步骤换到最新仓库起的实例。' }, 'stale')
+          : null,
         jsx.jsx('p', { style: { fontSize: 12, opacity: 0.7, marginTop: 8 }, children: '环境变量：AITM_REPO（仓库路径）/ AITM_URL（连已有实例）/ AITM_SPAWN=0（只连不起）。改完重启 DSH 客户端。' }, 'hint'),
         jsx.jsx('a', { style: { fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }, onClick: reload, children: '重新检查' }, 'reload'),
       ] });

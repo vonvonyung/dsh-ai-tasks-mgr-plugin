@@ -10,6 +10,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import os from 'node:os';
@@ -143,6 +144,44 @@ async function checkRender() {
   globalThis.fetch = realFetch;
 }
 
+/* ---------------- ⑤ 旧后端护栏（不用起 DSH：假一个老版本的后端）---------------- */
+async function checkStaleBackend() {
+  console.log('⑤ 旧后端护栏（复用/连上时必须拒绝）');
+  // 老后端（0.1.0-m1 那种）：health 通，但没有 apiRev、接口还叫 news.get
+  const old = http.createServer((req, res) => {
+    if (req.url === '/api/health') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, mode: 'web', actions: 51 }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: '未知接口' }));
+  });
+  await new Promise((resolve) => old.listen(0, '127.0.0.1', resolve));
+  const port = old.address().port;
+
+  const savedUrl = process.env.AITM_URL;
+  const savedSpawn = process.env.AITM_SPAWN;
+  process.env.AITM_URL = `http://127.0.0.1:${port}`;
+  process.env.AITM_SPAWN = '0';
+  let msg = '';
+  try {
+    // DEFAULTS 在模块加载时读环境变量 → 必须在这之前设好；用 query 绕开模块缓存
+    const host = await import(`${pathToFileURL(path.join(ROOT, 'index.js')).href}?stale=${Date.now()}`);
+    await host.ensureBase();
+    msg = '(居然连上了，没有拒绝)';
+  } catch (err) {
+    msg = String(err?.message ?? err);
+  } finally {
+    if (savedUrl === undefined) delete process.env.AITM_URL;
+    else process.env.AITM_URL = savedUrl;
+    if (savedSpawn === undefined) delete process.env.AITM_SPAWN;
+    else process.env.AITM_SPAWN = savedSpawn;
+    old.close();
+  }
+  check('旧后端被拒 + 给人话（含版本/处理步骤）', /旧版/.test(msg) && /apiRev/.test(msg) && /git pull/.test(msg), msg.slice(0, 150));
+}
+
 /* ---------------- ②③④ 需要真的 DSH ---------------- */
 async function checkDsh() {
   if (!fs.existsSync(DSH_ENTRY)) {
@@ -242,6 +281,7 @@ async function checkDsh() {
 /* ---------------- 收尾 ---------------- */
 try {
   await checkRender();
+  await checkStaleBackend();
   await checkDsh();
 } catch (err) {
   check('验证过程未抛异常', false, String(err?.message ?? err));

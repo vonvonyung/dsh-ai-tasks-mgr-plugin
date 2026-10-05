@@ -50,7 +50,7 @@
 ## 验证
 
 ```bash
-node scripts/verify-dsh.mjs     # 11 项：离线渲染 + 挂点护栏（不占 rightbar）+ 激活 + boot 图 + 分片送达 + 端到端真数据
+node scripts/verify-dsh.mjs     # 12 项：离线渲染 + 挂点护栏（不占 rightbar）+ 旧后端护栏 + 激活 + boot 图 + 分片送达 + 端到端真数据
 ```
 
 ## 实现要点（踩过的坑，别踩第二遍）
@@ -78,6 +78,15 @@ node scripts/verify-dsh.mjs     # 11 项：离线渲染 + 挂点护栏（不占 
    ```
    两个 keyed 槽的 `key` ＝ 类型的 **`id`**（不是 `kind`）；开面板用 `ctx.sidebarRight.openTab('<kind>')`
    （`openTab` 属于「当前会话」，没有会话时不要调；用户也能从右侧栏的引导页点进来）。
+
+9. **后端会被「复用」，所以必须核身份**：插件默认按 `%TEMP%/aitm-dsh-backend.json` 复用上一次
+   会话留下的后端（多个 DSH 会话共用一个实例，不叠着起）。但**复用的实例可能是旧版**——实测
+   踩到过：DSH 接过一个 `0.1.0-m1` 的旧后端（接口还叫 `news.get`），面板显示 51 个 action，
+   `aitm_feed_today` 当场报「未知接口：feed.get」。
+   现在两边对齐了：核心在 `GET /api/health` 里报 `apiRev`（`src/shared/api-rev.ts`，改接口名/入参
+   就 +1），插件 `REQUIRED_API_REV` 对不上就**拒绝复用/拒绝连接**，错误里直接写清「连的是谁、
+   差在哪、怎么处理」；设置节也会把版本 + 数据目录摊开显示。
+   另：`version` 字段是 `npm_package_version`，本项目长期是 `0.1.0`，**别拿它当版本判据**，认 `apiRev`。
 
 ## 面板里放什么
 

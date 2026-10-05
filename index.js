@@ -30,12 +30,26 @@ const DEFAULTS = {
   spawn: process.env.AITM_SPAWN !== '0',
 };
 
+/**
+ * 我们要的后端线协议版本。后端在 `GET /api/health` 里报 `apiRev`（核心 `src/shared/api-rev.ts`）。
+ *
+ * 为什么必须核这个：插件与后端**各自构建、各自升级**，而现在的复用逻辑只要 health 通就会
+ * 接过别人留下的后端 —— 实测踩到过：DSH 复用了一个旧版实例（0.1.0-m1，接口还叫 `news.get`），
+ * 面板显示 51 个 action，`aitm_feed_today` 直接报「未知接口：feed.get」。
+ * 老后端没有 `apiRev` 字段 → 按 1 算 → 判为不兼容。
+ */
+const REQUIRED_API_REV = 2;
+/** health 里没有 apiRev 的老后端按 1 算 */
+const LEGACY_API_REV = 1;
+
 const state = {
   base: null,
   child: null,
   starting: null,
   /** true = 复用的是别人起的后端，退出时不能收（收了会把别人正在用的服务干掉） */
   adopted: false,
+  /** 连上/起好的后端身份（health 里那几项），给 /aitm-plugin/config 与工具用 */
+  identity: null,
   log: [],
   exitHook: false,
 };
@@ -138,6 +152,33 @@ async function health(base, timeoutMs = 1500) {
   }
 }
 
+/** 后端身份（health 里那几项），旧后端缺字段时为 undefined */
+function backendId(h) {
+  return {
+    apiRev: typeof h?.apiRev === 'number' ? h.apiRev : LEGACY_API_REV,
+    version: h?.version ?? null,
+    dataDir: h?.dataDir ?? null,
+    buildAt: h?.buildAt ?? null,
+    actions: h?.actions ?? null,
+  };
+}
+
+const compatible = (h) => backendId(h).apiRev >= REQUIRED_API_REV;
+
+/** 不兼容时给的**可处置**错误：说清「连的是谁 / 差在哪 / 怎么办」 */
+function incompatibleError(base, h, how) {
+  const id = backendId(h);
+  const what = `你连上的后端是旧版：version=${id.version ?? '(未知)'}、apiRev=${id.apiRev}（需要 ≥ ${REQUIRED_API_REV}）、${id.actions ?? '?'} 个 action`;
+  const where = id.dataDir ? `，数据目录 ${id.dataDir}` : '';
+  return new Error(
+    `${what}${where}（${how}：${base}）。` +
+      `这一版后端没有 feed.* 接口（旧版叫 news.*），插件用不了。` +
+      `处理：① 别让插件复用旧实例 —— 关掉 DSH 后清掉 %TEMP%/aitm-dsh-backend.json，并确认没有遗留的 node scripts/dev-web.mjs 进程；` +
+      `② 确认 AITM_REPO（当前 ${DEFAULTS.repo}）指向**最新**仓库、且已 git pull；` +
+      `③ 若设了 AITM_URL，重启那个实例或去掉它。`,
+  );
+}
+
 async function waitHealth(base, ms) {
   const until = Date.now() + ms;
   for (;;) {
@@ -164,7 +205,12 @@ async function call(action, payload = {}) {
 /** 确保有一个可用后端：AITM_URL 优先；否则按需拉起（同一进程内只拉一次） */
 export async function ensureBase() {
   if (DEFAULTS.url) {
-    if (!state.base) state.base = DEFAULTS.url;
+    if (!state.base) {
+      const h = await health(DEFAULTS.url, 3000);
+      if (h?.ok && !compatible(h)) throw incompatibleError(DEFAULTS.url, h, 'AITM_URL');
+      state.base = DEFAULTS.url;
+      state.identity = backendId(h);
+    }
     return state.base;
   }
   if (state.base) return state.base;
@@ -175,11 +221,16 @@ export async function ensureBase() {
     const known = readRegistry();
     if (known?.pid && known?.base && pidAlive(known.pid)) {
       const h = await health(known.base);
-      if (h?.ok) {
-        note(`[host] 复用已有后端 ${known.base}（pid=${known.pid}）`);
+      if (h?.ok && compatible(h)) {
+        note(`[host] 复用已有后端 ${known.base}（pid=${known.pid}，v${backendId(h).version ?? '?'}）`);
         state.adopted = true;
         state.base = known.base;
+        state.identity = backendId(h);
         return known.base;
+      }
+      if (h?.ok) {
+        // 不兼容：**不动**那个进程（可能是别人的会话在用），只拒绝复用，自己起一个
+        note(`[host] 拒绝复用旧后端 ${known.base}：apiRev=${backendId(h).apiRev} < ${REQUIRED_API_REV}（v${backendId(h).version ?? '?'}）`);
       }
     }
 
@@ -215,7 +266,12 @@ export async function ensureBase() {
       }
     });
 
-    await waitHealth(base, 90_000);
+    const h = await waitHealth(base, 90_000);
+    if (!compatible(h)) {
+      // 插件是从哪个仓库加载的，它就会起哪个仓库的后端 —— 这两个都会在错误里说清
+      throw incompatibleError(base, h, '插件自己拉起的后端');
+    }
+    state.identity = backendId(h);
     state.base = base;
     return base;
   })();
@@ -253,6 +309,9 @@ const schemaHealth = {
     actions: { type: 'integer' },
     dataDir: { type: 'string' },
     base: { type: 'string' },
+    version: { type: 'string' },
+    apiRev: { type: 'integer' },
+    apiRevRequired: { type: 'integer' },
     log: { type: 'array', items: { type: 'string' } },
   },
 };
@@ -274,7 +333,15 @@ export function apply(ctx) {
             } catch (err) {
               error = String(err?.message ?? err);
             }
-            const body = JSON.stringify({ base, error, repo: DEFAULTS.repo });
+            // identity：客户端面板与设置节要把「连的是哪个后端」显示出来
+            // （踩过：复用了一个旧实例，界面上 51 个 action、工具报「未知接口：feed.get」）
+            const body = JSON.stringify({
+              base,
+              error,
+              repo: DEFAULTS.repo,
+              apiRevRequired: REQUIRED_API_REV,
+              identity: state.identity,
+            });
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
             res.end(body);
             return true;
@@ -295,7 +362,12 @@ export function apply(ctx) {
       output: {
         schema: schemaHealth,
         render: (_a, v) => [
-          { type: 'text', text: v.ok ? `AI 任务台可用：${v.base}（${v.actions} 个 action）` : `不可用：${JSON.stringify(v)}` },
+          {
+            type: 'text',
+            text: v.ok
+              ? `AI 任务台可用：${v.base}（${v.actions} 个 action，apiRev=${v.apiRev ?? '?'}，版本 ${v.version ?? '未知'}${v.dataDir ? `，数据目录 ${v.dataDir}` : ''}）`
+              : `不可用：${JSON.stringify(v)}`,
+          },
         ],
       },
       async execute() {
@@ -303,15 +375,25 @@ export function apply(ctx) {
           const base = await ensureBase();
           const h = await health(base, 3000);
           if (!h?.ok) return { ok: false, error: 'GET /api/health 不通', base, log: state.log.slice(-10) };
-          // 数据目录不在 health 里，顺手问一次 settings
-          let dataDir;
-          try {
-            const st = await call('settings.get');
-            dataDir = st?.dataDir ?? st?.paths?.dataDir;
-          } catch {
-            /* 拿不到就算了 */
+          // 数据目录：新后端在 health 里给；老后端没有，才回落到 settings.get
+          let dataDir = h.dataDir;
+          if (!dataDir) {
+            try {
+              const st = await call('settings.get');
+              dataDir = st?.dataDir ?? st?.paths?.dataDir;
+            } catch {
+              /* 拿不到就算了 */
+            }
           }
-          return { ...h, base, ...(dataDir ? { dataDir } : {}), log: state.log.slice(-6) };
+          const id = backendId(h);
+          return {
+            ...h,
+            base,
+            ...(dataDir ? { dataDir } : {}),
+            apiRev: id.apiRev,
+            apiRevRequired: REQUIRED_API_REV,
+            log: state.log.slice(-6),
+          };
         } catch (err) {
           return { ok: false, error: String(err?.message ?? err), log: state.log.slice(-10) };
         }
