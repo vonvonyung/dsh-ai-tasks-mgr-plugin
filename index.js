@@ -9,7 +9,10 @@
  * M2 会把「桥」换成插件进程内的 L3 服务（core 直接 import），工具与路由的接口不变。
  */
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
@@ -30,9 +33,67 @@ const state = {
   base: null,
   child: null,
   starting: null,
+  /** true = 复用的是别人起的后端，退出时不能收（收了会把别人正在用的服务干掉） */
+  adopted: false,
   log: [],
   exitHook: false,
 };
+
+/**
+ * 后端登记表（临时目录）：谁起了后端、pid 多少、监听哪个端口。
+ * 作用有两个：① 多个 DSH 会话（面板 + headless）**复用同一个后端**，不叠着起；
+ * ② 上次没收干净时（比如进程被 SIGTERM 直接砍掉，'exit' 钩子不会跑）这里还留着 pid —— verify 能按它收尾。
+ */
+const PIDFILE = path.join(os.tmpdir(), 'aitm-dsh-backend.json');
+
+function readRegistry() {
+  try {
+    return JSON.parse(fs.readFileSync(PIDFILE, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function writeRegistry(entry) {
+  try {
+    fs.writeFileSync(PIDFILE, JSON.stringify(entry));
+  } catch {
+    /* 临时目录写不了就算了，不影响功能 */
+  }
+}
+
+function clearRegistryIf(pid) {
+  const cur = readRegistry();
+  if (cur?.pid === pid) {
+    try {
+      fs.unlinkSync(PIDFILE);
+    } catch {
+      /* 已经被删了也无所谓 */
+    }
+  }
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 收掉一个进程**组**：只 kill 进程本身的话，它再 spawn 出来的东西（npx/vite/…）会活下来 */
+function killGroup(pid, signal = 'SIGTERM') {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      /* 已经没了 */
+    }
+  }
+}
 
 const note = (line) => {
   state.log.push(line);
@@ -98,6 +159,18 @@ export async function ensureBase() {
   if (state.starting) return state.starting;
 
   state.starting = (async () => {
+    // 先看登记表：上一次会话起的后端还活着就复用（不叠着起第二个）
+    const known = readRegistry();
+    if (known?.pid && known?.base && pidAlive(known.pid)) {
+      const h = await health(known.base);
+      if (h?.ok) {
+        note(`[host] 复用已有后端 ${known.base}（pid=${known.pid}）`);
+        state.adopted = true;
+        state.base = known.base;
+        return known.base;
+      }
+    }
+
     const port = await freePort();
     const vitePort = await freePort();
     const base = `http://127.0.0.1:${port}`;
@@ -110,9 +183,12 @@ export async function ensureBase() {
       // stdio 用 ignore + unref：否则这个长驻子进程会把 DSH 的 headless 进程「钉」住不退出
       // （实测过：一次 headless 跑完 turn 也不结束，直到超时）。要看子进程日志就 AITM_DEBUG=1。
       stdio: debug ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'ignore', 'ignore'],
+      // detached：让子进程自成进程组，收尾时能整组干掉（npx/vite 这类孙进程不会活下来）
+      detached: true,
     });
     state.child = child;
     child.unref?.();
+    writeRegistry({ pid: child.pid, base, repo: DEFAULTS.repo, at: Date.now() });
     if (debug) {
       child.stdout?.on('data', (b) => note(`[host] ${String(b).trim()}`));
       child.stderr?.on('data', (b) => note(`[host!] ${String(b).trim()}`));
@@ -139,15 +215,18 @@ export async function ensureBase() {
 }
 
 function stop() {
-  if (state.child && !state.child.killed) {
-    try {
-      state.child.kill();
-      note('[host] 已收掉我们拉起的后端');
-    } catch {
-      /* 收不掉也不该崩插件 */
-    }
+  if (state.child?.pid && !state.adopted) {
+    const pid = state.child.pid;
+    killGroup(pid, 'SIGTERM');
+    // 3 秒还不走就强杀（有些环境 SIGTERM 会被忽略）
+    setTimeout(() => {
+      if (pidAlive(pid)) killGroup(pid, 'SIGKILL');
+    }, 3000).unref?.();
+    clearRegistryIf(pid);
+    note('[host] 已收掉我们拉起的后端（整进程组）');
   }
   state.child = null;
+  state.adopted = false;
   state.base = null;
   state.starting = null;
 }

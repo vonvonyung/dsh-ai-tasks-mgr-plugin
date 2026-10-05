@@ -46,6 +46,17 @@ function killAll() {
     try { c.kill('SIGTERM'); } catch { /* 忽略 */ }
   }
   children.length = 0;
+  // 被 SIGTERM 砍掉的 dsh 不会跑 'exit' 钩子 → 它拉起的后端会留下。
+  // 插件把 pid 登记在临时目录里（多个会话复用同一个后端），这里按它整组收尾。
+  try {
+    const reg = JSON.parse(fs.readFileSync(path.join(os.tmpdir(), 'aitm-dsh-backend.json'), 'utf8'));
+    if (reg?.pid) {
+      try { process.kill(-reg.pid, 'SIGTERM'); } catch { try { process.kill(reg.pid, 'SIGTERM'); } catch { /* 没了 */ } }
+      fs.unlinkSync(path.join(os.tmpdir(), 'aitm-dsh-backend.json'));
+    }
+  } catch {
+    /* 没有登记表 = 没起过后端 */
+  }
 }
 
 function start(cmd, args, opts = {}) {
