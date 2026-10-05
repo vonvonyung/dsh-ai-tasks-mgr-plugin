@@ -1,11 +1,13 @@
 /**
  * 一条命令验完 M1 的五件事（都能在无浏览器的沙箱里跑）：
  *   ① 客户端半边离线渲染（假 window.__ModuleLoader__ + 假 ctx + react-dom/server）+ 挂点护栏（不占 rightbar）
+ *   ⑤ 旧后端护栏（假一个没有 apiRev 的后端 → 必须被拒）⑥ 起前自检（不是仓库的路径 → 当场拦下）
  *   ② 插件激活 + 客户端半边进 __DSH_BOOT__ 图
  *   ③ 客户端分片送达（/plugins/??…/client.js → 200 且内容里有我们的挂点）
  *   ④ 端到端：假模型 → 工具 aitm_health → **真后端**（插件自己拉起的 AI 任务台）返回真数据
  *
  * 用法：node scripts/verify-dsh.mjs        （退出码 0 = 全过）
+ *      另有体检：node scripts/doctor.mjs   （不起 DSH，直接看「在哪个目录起 / 缺什么」）
  * 环境：AITM_REPO 指向 AI 任务台仓库（默认 /home/user/ai-tasks-mgr）
  */
 import { spawn, spawnSync } from 'node:child_process';
@@ -182,6 +184,35 @@ async function checkStaleBackend() {
   check('旧后端被拒 + 给人话（含版本/处理步骤）', /旧版/.test(msg) && /apiRev/.test(msg) && /git pull/.test(msg), msg.slice(0, 150));
 }
 
+/* ---------------- ⑥ 起前自检（仓库路径不对 = 「不能拉起后端」最常见的原因） ---------------- */
+async function checkRepoPreflight() {
+  console.log('⑥ 起前自检（仓库路径 / 依赖）');
+  const bogus = path.join(os.tmpdir(), `aitm-not-a-repo-${String(Date.now())}`);
+  fs.mkdirSync(bogus, { recursive: true });
+  const savedRepo = process.env.AITM_REPO;
+  const savedSpawn = process.env.AITM_SPAWN;
+  process.env.AITM_REPO = bogus; // 存在，但不是我们的仓库（没有 package.json）
+  process.env.AITM_SPAWN = '1';
+  let msg = '';
+  let d = null;
+  try {
+    const host = await import(`${pathToFileURL(path.join(ROOT, 'index.js')).href}?preflight=${String(Date.now())}`);
+    d = host.diagnose();
+    await host.ensureBase();
+    msg = '(居然起来了，没有拦住)';
+  } catch (err) {
+    msg = String(err?.message ?? err);
+  } finally {
+    if (savedRepo === undefined) delete process.env.AITM_REPO;
+    else process.env.AITM_REPO = savedRepo;
+    if (savedSpawn === undefined) delete process.env.AITM_SPAWN;
+    else process.env.AITM_SPAWN = savedSpawn;
+    fs.rmSync(bogus, { recursive: true, force: true });
+  }
+  check('不是仓库的路径会被当场拦下', Boolean(d?.repoProblem) && msg !== '' && !/居然/.test(msg), (d?.repoProblem ?? msg).slice(0, 120));
+  check('拦截理由带「怎么办」', /AITM_REPO/.test(msg) && /npm install|git pull|patch/.test(msg), msg.slice(0, 150));
+}
+
 /* ---------------- ②③④ 需要真的 DSH ---------------- */
 async function checkDsh() {
   if (!fs.existsSync(DSH_ENTRY)) {
@@ -282,6 +313,7 @@ async function checkDsh() {
 try {
   await checkRender();
   await checkStaleBackend();
+  await checkRepoPreflight();
   await checkDsh();
 } catch (err) {
   check('验证过程未抛异常', false, String(err?.message ?? err));

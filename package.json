@@ -15,7 +15,8 @@
     }
   },
   "scripts": {
-    "verify": "node scripts/verify-dsh.mjs"
+    "verify": "node scripts/verify-dsh.mjs",
+    "doctor": "node scripts/doctor.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.0-rc.2",

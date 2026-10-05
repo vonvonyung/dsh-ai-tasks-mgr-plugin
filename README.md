@@ -50,7 +50,8 @@
 ## 验证
 
 ```bash
-node scripts/verify-dsh.mjs     # 12 项：离线渲染 + 挂点护栏（不占 rightbar）+ 旧后端护栏 + 激活 + boot 图 + 分片送达 + 端到端真数据
+node scripts/verify-dsh.mjs     # 14 项：离线渲染 + 挂点护栏（不占 rightbar）+ 旧后端护栏 + 起前自检 + 激活 + boot 图 + 分片送达 + 端到端真数据
+node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起后端、缺什么、后端日志尾巴
 ```
 
 ## 实现要点（踩过的坑，别踩第二遍）
@@ -87,6 +88,16 @@ node scripts/verify-dsh.mjs     # 12 项：离线渲染 + 挂点护栏（不占 
    就 +1），插件 `REQUIRED_API_REV` 对不上就**拒绝复用/拒绝连接**，错误里直接写清「连的是谁、
    差在哪、怎么处理」；设置节也会把版本 + 数据目录摊开显示。
    另：`version` 字段是 `npm_package_version`，本项目长期是 `0.1.0`，**别拿它当版本判据**，认 `apiRev`。
+
+10. **别写死仓库路径，也别把子进程的错误吞掉**（2026-10-05 真机「不能拉起后端」）：
+   早期版本 `AITM_REPO` 默认值写的是开发机的 `/home/user/ai-tasks-mgr` —— 换到 Windows 就变成
+   「去一个不存在的目录起后端」，而 `stdio:'ignore'` 把 spawn 的错误也吞了，用户只看到
+   「后端没起来」。现在：① 仓库默认**按插件自身位置推导**（`path.resolve(PLUGIN_DIR, '..')`，
+   插件就在仓库里）；② 起之前自检仓库（目录 / `package.json` 名字 / `scripts/dev-web.mjs` /
+   `node_modules/vite`），不合格**当场**报「哪个路径、缺什么、怎么修」；③ 看门狗把后端
+   stdout/stderr 追进 `%TEMP%/aitm-dsh-backend.log`，失败时把尾巴贴进错误与面板；
+   ④ spawn 的 `'error'` 事件接住，不再空等 90 秒超时；⑤ `node scripts/doctor.mjs` 一条命令
+   把上面全打出来。
 
 ## 面板里放什么
 

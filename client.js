@@ -137,6 +137,22 @@ window.__ModuleLoader__.load({
                               : '检查 AITM_REPO 是否指向 AI 任务台仓库，以及那个仓库能不能跑 `node scripts/dev-web.mjs --prod`。',
                           })
                         : null,
+                      // 起不来时把「在哪个目录起、缺什么、后端日志尾巴」直接摊在面板里 —— 报错要能照着修
+                      !cfg.loading && cfg.repo
+                        ? jsx.jsxs('div', { style: { marginTop: 10, fontSize: 11.5, opacity: 0.75, lineHeight: 1.6 }, children: [
+                            jsx.jsx('div', { children: `仓库：${cfg.repo}` }, 'repo'),
+                            cfg.repoProblem ? jsx.jsx('div', { style: { color: '#d1242f' }, children: `自检：${cfg.repoProblem}` }, 'problem') : null,
+                            cfg.tail?.length
+                              ? jsx.jsxs('div', { children: [
+                                  jsx.jsx('div', { style: { marginTop: 4 }, children: '后端日志（尾部）：' }, 't'),
+                                  jsx.jsx('pre', {
+                                    style: { margin: '4px 0 0', padding: 8, maxHeight: 180, overflow: 'auto', background: 'rgba(127,127,127,0.12)', borderRadius: 4, fontSize: 11, whiteSpace: 'pre-wrap' },
+                                    children: cfg.tail.slice(-12).join('\n'),
+                                  }, 'log'),
+                                ] }, 'tail')
+                              : null,
+                          ] }, 'diag')
+                        : null,
                     ],
                   },
                   'status',

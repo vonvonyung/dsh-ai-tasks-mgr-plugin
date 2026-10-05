@@ -22,7 +22,15 @@ export const name = 'dsh-plugin-aitm';
 /** 需要 tools；webServer 是可选的（没有就只做工具，不递地址） */
 export const inject = ['tools'];
 
-const REPO_DEFAULT = process.env.AITM_REPO ?? '/home/user/ai-tasks-mgr';
+/**
+ * 仓库位置：默认**从插件自身位置推导** —— 插件就在仓库的 `dsh-plugin/` 里。
+ *
+ * 别写死路径（早期版本写死了开发机的 `/home/user/ai-tasks-mgr`）：换台机器/换成 Windows
+ * 就变成「去一个不存在的目录起后端」，而且报错还被 stdio:'ignore' 吞掉，只看到「后端没起来」。
+ * 显式设了 AITM_REPO 就用它。
+ */
+const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_DEFAULT = process.env.AITM_REPO ?? path.resolve(PLUGIN_DIR, '..');
 
 const DEFAULTS = {
   repo: REPO_DEFAULT,
@@ -50,6 +58,8 @@ const state = {
   adopted: false,
   /** 连上/起好的后端身份（health 里那几项），给 /aitm-plugin/config 与工具用 */
   identity: null,
+  /** spawn 本身失败的描述（cwd 不存在之类）—— 有它就别再空等 health 超时 */
+  spawnError: null,
   log: [],
   exitHook: false,
 };
@@ -60,6 +70,61 @@ const state = {
  * ② 上次没收干净时（比如进程被 SIGTERM 直接砍掉，'exit' 钩子不会跑）这里还留着 pid —— verify 能按它收尾。
  */
 const PIDFILE = path.join(os.tmpdir(), 'aitm-dsh-backend.json');
+
+/**
+ * 后端日志：看门狗把子进程的 stdout/stderr 都追进这里（`stdio:'ignore'` 是为了不把 DSH 钉住，
+ * 但那样失败原因就全丢了）。起不来时把尾部几行原样给用户看 —— 报错必须具体到能动手。
+ */
+const BACKEND_LOG = path.join(os.tmpdir(), 'aitm-dsh-backend.log');
+
+const LOG_TAIL = 40;
+function logTail(n = 20) {
+  // 注意 slice(-0) === slice(0)（返回全部）—— n 必须 ≥ 1，全量读用 readBackendLog()
+  const limit = Math.max(1, n);
+  try {
+    return readBackendLog().slice(-limit);
+  } catch {
+    return [];
+  }
+}
+
+function readBackendLog() {
+  return fs.readFileSync(BACKEND_LOG, 'utf8').trimEnd().split('\n');
+}
+
+/**
+ * 起后端之前的自检。**每次失败都给出「哪个路径、缺什么、怎么修」**，而不是等 90 秒超时后
+ * 只说一句「后端没起来」。
+ * @returns 错误描述；null = 可以起
+ */
+function preflightRepo(repo) {
+  if (!repo || typeof repo !== 'string') return 'AITM_REPO 没配（也不是从插件位置能推导出的路径）';
+  if (!fs.existsSync(repo)) {
+    return `仓库目录不存在：${repo}（AITM_REPO=${process.env.AITM_REPO ?? '(未设，用插件位置推导)'}）`;
+  }
+  let pkg = null;
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(repo, 'package.json'), 'utf8'));
+  } catch {
+    return `${repo} 里没有可读的 package.json —— 这不像 AI 任务台仓库（AITM_REPO 指错了？）`;
+  }
+  if (pkg?.name !== 'ai-tasks-mgr') return `${repo} 的 package.json 是「${pkg?.name ?? '?'}」，不是 ai-tasks-mgr`;
+  const devWeb = path.join(repo, 'scripts', 'dev-web.mjs');
+  if (!fs.existsSync(devWeb)) return `缺少启动脚本：${devWeb}（仓库不完整？git pull 一下）`;
+  if (!fs.existsSync(path.join(repo, 'node_modules', 'vite'))) {
+    return `仓库依赖没装：${path.join(repo, 'node_modules', 'vite')} 不存在 —— 在 ${repo} 跑一次 npm install`;
+  }
+  return null;
+}
+
+/** 起前自检失败时抛的错（附上「怎么办」三步） */
+function repoError(detail) {
+  return new Error(
+    `${detail}。处理：① 在 DSH 启动前设 AITM_REPO=<AI 任务台仓库的绝对路径>（Windows 例如 setx AITM_REPO D:\\...\\ai-tasks-mgr，然后重开终端）；` +
+      `② 或把 `+'`dsh-plugin/aitm.patch.yml` 的 `name:` 指到**那个仓库**里的 `dsh-plugin/index.js`（插件默认就按自己的位置推导仓库）；' +
+      `③ 确认那个仓库已 git pull 且 npm install 过。当前推导出的仓库：${DEFAULTS.repo}`,
+  );
+}
 
 function readRegistry() {
   try {
@@ -126,6 +191,15 @@ const note = (line) => {
   if (state.log.length > 200) state.log.shift();
 };
 
+/** 往**后端日志文件**里写一行（看门狗与后端都写这里，失败时原样给用户看） */
+function logLine(line) {
+  try {
+    fs.appendFileSync(BACKEND_LOG, `${new Date().toISOString()} ${line}\n`);
+  } catch {
+    /* 日志写不了不影响功能 */
+  }
+}
+
 /** 找一个空闲端口（我们自己定端口，省得解析子进程日志） */
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -179,12 +253,21 @@ function incompatibleError(base, h, how) {
   );
 }
 
-async function waitHealth(base, ms) {
+async function waitHealth(base, ms, opts = {}) {
   const until = Date.now() + ms;
   for (;;) {
     const h = await health(base);
     if (h?.ok) return h;
-    if (Date.now() > until) throw new Error(`后端没起来（${base}/api/health 一直不通）`);
+    // 子进程已经明确失败（比如仓库路径不对）就别再空等超时了
+    if (opts.failed?.()) {
+      throw new Error(`${opts.failed()}（后端日志：${BACKEND_LOG}）\n${logTail(20).join('\n')}`);
+    }
+    if (Date.now() > until) {
+      const tail = logTail(20);
+      throw new Error(
+        `后端没起来（${base}/api/health 一直不通）` + (tail.length ? `\n后端日志（${BACKEND_LOG}）尾部：\n${tail.join('\n')}` : `\n（后端日志 ${BACKEND_LOG} 是空的：进程可能根本没起来）`),
+      );
+    }
     await new Promise((r) => setTimeout(r, 400));
   }
 }
@@ -234,24 +317,39 @@ export async function ensureBase() {
       }
     }
 
+    const problem = preflightRepo(DEFAULTS.repo);
+    if (problem) throw repoError(problem);
+
     const port = await freePort();
     const vitePort = await freePort();
     const base = `http://127.0.0.1:${port}`;
     if (!DEFAULTS.spawn) throw new Error(`没配 AITM_URL，且 AITM_SPAWN=0：连不上后端（${base}）`);
 
     const debug = process.env.AITM_DEBUG === '1';
-    const supervisor = path.join(path.dirname(fileURLToPath(import.meta.url)), 'supervisor.mjs');
+    const supervisor = path.join(PLUGIN_DIR, 'supervisor.mjs');
     // 后端交给看门狗起（见 supervisor.mjs）：DSH 被强杀时收尾钩子不跑，
     // 由看门狗盯着本进程的 pid 来收后端 —— 这样「关掉 DSH 不留后端」在 Ctrl+C / 强杀下也成立。
-    const child = spawn(process.execPath, [supervisor, String(process.pid), DEFAULTS.repo, String(port), String(vitePort), PIDFILE], {
-      // stdio 用 ignore + unref：否则这个长驻子进程会把 DSH 的 headless 进程「钉」住不退出
-      // （实测过：一次 headless 跑完 turn 也不结束，直到超时）。要看子进程日志就 AITM_DEBUG=1。
-      stdio: debug ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'ignore', 'ignore'],
-      // detached：自成进程组，收尾时能整组干掉（看门狗 + 后端 + vite 一起走）
-      detached: true,
-    });
+    let child;
+    try {
+      child = spawn(process.execPath, [supervisor, String(process.pid), DEFAULTS.repo, String(port), String(vitePort), PIDFILE, BACKEND_LOG], {
+        // stdio 用 ignore + unref：否则这个长驻子进程会把 DSH 的 headless 进程「钉」住不退出
+        // （实测过：一次 headless 跑完 turn 也不结束，直到超时）。要看子进程日志就 AITM_DEBUG=1。
+        // 后端自己的输出由看门狗追进 BACKEND_LOG，失败时我们能读到（见 supervisor.mjs）。
+        stdio: debug ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'ignore', 'ignore'],
+        // detached：自成进程组，收尾时能整组干掉（看门狗 + 后端 + vite 一起走）
+        detached: true,
+      });
+    } catch (err) {
+      throw repoError(`起后端的进程失败：${String(err?.message ?? err)}（cwd=${DEFAULTS.repo}，node=${process.execPath}）`);
+    }
     state.child = child;
     child.unref?.();
+    // spawn 本身失败（cwd 不存在 / node 不允许）：立刻记下来，让 waitHealth 别空等 90 秒
+    child.on('error', (err) => {
+      state.spawnError = `起后端的进程失败：${String(err?.message ?? err)}（cwd=${DEFAULTS.repo}，node=${process.execPath}）`;
+      note(`[host!] ${state.spawnError}`);
+      logLine(`[host!] ${state.spawnError}`);
+    });
     // 登记的是**看门狗**的 pid（收它 = 连后端整棵树一起收）
     writeRegistry({ pid: child.pid, base, repo: DEFAULTS.repo, at: Date.now() });
     if (debug) {
@@ -266,7 +364,7 @@ export async function ensureBase() {
       }
     });
 
-    const h = await waitHealth(base, 90_000);
+    const h = await waitHealth(base, 90_000, { failed: () => state.spawnError });
     if (!compatible(h)) {
       // 插件是从哪个仓库加载的，它就会起哪个仓库的后端 —— 这两个都会在错误里说清
       throw incompatibleError(base, h, '插件自己拉起的后端');
@@ -282,6 +380,24 @@ export async function ensureBase() {
     state.starting = null;
     throw err;
   }
+}
+
+export { stop };
+
+/** 诊断用：把「插件眼里的世界」原样抖出来（scripts/doctor.mjs 用；也让 verify 能断言自检逻辑） */
+export function diagnose() {
+  return {
+    pluginDir: PLUGIN_DIR,
+    repo: DEFAULTS.repo,
+    repoFromEnv: process.env.AITM_REPO ?? null,
+    repoProblem: preflightRepo(DEFAULTS.repo),
+    url: DEFAULTS.url || null,
+    spawn: DEFAULTS.spawn,
+    apiRevRequired: REQUIRED_API_REV,
+    registry: PIDFILE,
+    backendLog: BACKEND_LOG,
+    node: process.version,
+  };
 }
 
 function stop() {
@@ -335,12 +451,23 @@ export function apply(ctx) {
             }
             // identity：客户端面板与设置节要把「连的是哪个后端」显示出来
             // （踩过：复用了一个旧实例，界面上 51 个 action、工具报「未知接口：feed.get」）
+            // repo / repoProblem / log：起不来时面板要直接能看出「在哪个目录起、为什么没起来」
             const body = JSON.stringify({
               base,
               error,
               repo: DEFAULTS.repo,
+              repoProblem: preflightRepo(DEFAULTS.repo),
               apiRevRequired: REQUIRED_API_REV,
               identity: state.identity,
+              log: state.log.slice(-8),
+              // 后端日志尾部（面板直接显示）；整份日志在 BACKEND_LOG 文件里
+              tail: (() => {
+                try {
+                  return readBackendLog().slice(-LOG_TAIL);
+                } catch {
+                  return [];
+                }
+              })(),
             });
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
             res.end(body);
