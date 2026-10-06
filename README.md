@@ -1,17 +1,17 @@
 # dsh-plugin-aitm · AI 任务台 × DeepSeek Harness 插件
 
-把 AI 任务台接进 DSH 客户端的最小插件（M1：**只读**）。
+把 AI 任务台接进 DSH 客户端的最小插件（**工具面 11 个：想法 → 规格 → 任务 → 备份**）。
 
 ```
-┌─ DSH 客户端 ────────────────────────────────┐
-│  右侧栏：AI 任务台面板（iframe → 我们界面）   │  ← 人看
-│  对话：模型调用 aitm_health / idea_list / …   │  ← 模型用
-│  设置：AI 任务台（后端地址 + 健康状态）        │  ← 运维
-└─────────────────────────────────────────────┘
+┌─ DSH 客户端 ───────────────────────────────────────────┐
+│  右侧栏：AI 任务台面板（日历原生 React，其它页 iframe）  │  ← 人看
+│  对话：模型调用 aitm_idea_list / task_start / …（11 个） │  ← 模型用
+│  设置：AI 任务台（后端地址 + 健康状态 + 后端来法）        │  ← 运维
+└────────────────────────────────────────────────────────┘
                     │
                     ▼  本机回环（只绑 127.0.0.1）
-     现有 web 宿主：node scripts/dev-web.mjs --prod
-     （M2 会换成插件进程内的 L3 服务，插件接口不变）
+     插件进程内的 L3 服务（默认）—— 内核跑在 DSH 自己的进程里
+     `dist-server/l3.mjs`；逃生通道：AITM_URL / AITM_L3=0
 ```
 
 ## 装（三步，开发期不需要 pnpm）
@@ -37,17 +37,27 @@
    | `AITM_REPO` | AI 任务台仓库路径（要能跑 `node scripts/dev-web.mjs --prod`） | 插件目录的上一级 |
    | `AITM_URL` | 已有实例地址；设了就不自动起（连远程/已有进程） | 空 |
    | `AITM_SPAWN` | `0` = 只连不起（连不上就报错） | `1` |
+   | `AITM_L3` | `0` = 退回 M1 的 spawn 桥（保命通道） | `1`（进程内 L3） |
    | `AITM_DEBUG` | `1` = 接住子进程日志（**会让 headless 不退出，只在手工调试时开**） | 空 |
 
-## 五个工具（模型可调用）
+## 十一个工具（模型可调用）
 
 | 工具 | 读写 | 干的事 |
 |---|---|---|
 | `aitm_health` | 只读 | 后端健康：action 数 / 数据目录 / 后端地址（面板打不开先调它） |
 | `aitm_idea_list` | 只读 | 列想法（status / q / limit，默认 20 条）+ 各状态计数 |
+| `aitm_idea_get` | 只读 | 取一条想法的详情：描述 / 标签 / 规格 / 关联任务 + 仓库 |
 | `aitm_feed_today` | 只读 | 今日热榜条数与收藏数（读快照，不触发抓取） |
+| `aitm_calendar_day` | 只读 | 某一天（默认今天，本机时区）：当天想法与收藏 + 当月计数 |
+| `aitm_task_status` | 只读 | 任务进度：给 `taskId` 取一条，不给就列最近的任务 |
+| `aitm_repo_status` | 只读 | 仓库与 worktree 占用（跑一次 `workspace.gc` 的**预演**，不动磁盘） |
 | `aitm_idea_create` | **写** | 在灵感箱新建一条想法（标题必填；描述 / 标签 / 优先级可选） |
 | `aitm_idea_set_status` | **写** | 改想法的状态（核心校验合法流转，非法流转会带着原因返回） |
+| `aitm_task_start` | **写** | 开工：想法 + 一句指令 → 起一个 AI 任务（建 worktree、跑 CLI） |
+| `aitm_backup_now` | **写** | 立即备份（`lean` 全量配置 / `full` 连 worktree 一起） |
+
+只读工具**不问**；**写工具 4 个**（`idea_create` / `idea_set_status` / `task_start` /
+`backup_now`）一律走审批闸 —— 它们会动仓库、worktree 和磁盘。
 
 **写操作走审批闸**（`tools/pre-execute`，M2 第一步）：
 
@@ -63,7 +73,8 @@
 
 ## 对话里的工具卡（`tool.call.toolview`，M2 第二步）
 
-五个工具在对话流里**不是一行灰字**，而是各自一张卡（想法卡 / 列表卡 / 合集卡 / 健康卡）：
+十一个工具在对话流里**不是一行灰字**，而是各自一张卡（想法卡 / 详情卡 / 列表卡 / 合集卡 /
+健康卡 / 任务卡 / 任务列表卡 / 日历卡 / 仓库卡 / 备份卡）：
 
 - 数据怎么来：**工具侧**声明 `output.presentationMeta(args, value)` —— DSH 只对顶层调用计算一次，
   把返回值**逐字**放进会话记录的 `tool/result.meta`；**客户端侧**注册 keyed 槽
@@ -75,18 +86,23 @@
 - 文案走 `ctx.locale.register('aitm', { zh, en })` + `t('card.…', { n })`（`{n}` 由 locale 服务插值）。
 - 卡片是纯 react-dom 组件（`window.__ModuleLoader__.load` 里 require react/jsx-runtime），
   官方原子件（图标 / TextShimmer / Pill）取自 `@deepseek-ai/dsh-client-ui-primitives`，**取不到就降级成纯文本样式**。
-- 五个 key：`aitm_health` / `aitm_idea_list` / `aitm_feed_today` / `aitm_idea_create` / `aitm_idea_set_status`；
-  拼错永不渲染（keyed 槽只认精确 key），没认领的调用走 DSH 的通用行。
+- 十一个 key ＝ 十一个工具名；拼错永不渲染（keyed 槽只认精确 key），没认领的调用走 DSH 的通用行。
+- **原生日历**（M2 第四步）：右侧栏的「日历」不再套 iframe，而是 React 月历（`CalendarGrid` 纯展示 +
+  `AitmCalendar` 取数）：42 格、周一起排、想法蓝点 / 收藏黄点、翻月 / 今天 / 刷新、当天明细。
+  数据走插件自己的 `/api`（`idea.list` + `feed.get`），并订阅 `/api/events` 去抖刷新；
+  点一条想法 → 把 iframe 面板深链到 `?embed=1&view=board&idea=<id>`，直接落在那条详情上。
 
 ## 验证
 
 ```bash
-node scripts/verify-dsh.mjs     # 42 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡 10 项（五种卡片 / 失败 / 运行 / 兜底 / 异常块）
+node scripts/verify-dsh.mjs     # 57 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
+                                #        （11 种卡片 + 注册 / 文案 + 失败 / 运行 / 兜底 / 异常块 + 两条日历网格）
                                 #        + 旧后端护栏 + 起前自检
                                 #        + 审批闸（写→ask / 只读→放行 / 缺参→deny / 下游优先 / 取消）
                                 #        + 激活 + boot 图 + 分片送达 + inject 服务都有提供者（防 R9 式 pending 白屏） + 端到端真数据
                                 #        + meta 落盘（health / 写想法） + 写操作 fail-closed + 放行后落盘
                                 #        + 后端来法（默认进程内 L3 / AITM_URL / AITM_L3=0）+ 不留常驻后端进程
+                                #        + 工具层（真 L3 + 临时数据目录：11 个工具的输出过宿主同款 schema，含负例）
 node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起后端、缺什么、后端日志尾巴
 ```
 
@@ -158,16 +174,18 @@ node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起
 
 ## 面板里放什么
 
-iframe 打的是 `?embed=1&view=<board|calendar|feed>`：
-- `embed=1` 让我们界面**隐藏自己的侧栏和顶栏**（否则 DSH 里会出现两层导航）；
-- 自带一条极简切换（看板 / 日历 / 合集）。
+- **日历页原生**：右侧栏的「日历」是插件的 React 组件（月历 + 当天明细），见上面的工具卡一节。
+- 其余页（看板 / 合集）仍是 iframe，打的是 `?embed=1&view=<board|feed>`：
+  - `embed=1` 让我们界面**隐藏自己的侧栏和顶栏**（否则 DSH 里会出现两层导航）；
+  - 自带一条极简切换（看板 / 日历 / 合集）；
+  - `&idea=<id>` 是深链：打开面板时直接落在那条想法的详情上（原生日历点想法就走它）。
 
 ## 已知边界
 
-- 面板是 **iframe**（先拿到"看得见"，M2 逐页改成 DSH 插槽原生组件）。
+- **日历已原生**（React，不再 iframe）；看板 / 合集仍是 iframe —— 逐页改造还在继续。
 - 后端默认是**进程内 L3**（M2 第三步）：内核跑在 DSH 自己的进程里，只留一个回环端口给 iframe；
   **不再 spawn 常驻后端**（所以也没有「复用旧实例」「关不掉的孤儿进程」这两类问题了）。
   两条逃生通道：`AITM_URL=<地址>` 连外部实例（保留旧后端护栏）、`AITM_L3=0` 退回 M1 的 spawn 桥。
-- 写操作已开（M2 第一步）：记想法 / 改状态两个写工具，一律走 `tools/pre-execute` 审批；
-  「开工」等任务级动作还没做。
+- 写操作 4 个（记想法 / 改状态 / 开工 / 备份）：一律走 `tools/pre-execute` 审批，缺参直接 deny；
+  开工走的是核心 runner 的 fail-fast（想法不存在 / 没绑仓库 / 已有进行中的任务都会带原因返回）。
 - 工具卡在**刷新会话后**才吃到 meta（meta 随会话记录走）；老会话里的调用只有原始文本。
