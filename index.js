@@ -11,6 +11,7 @@
  * 「复用旧实例」这一整类问题（R10）。逃生通道：`AITM_URL`（连外部后端）/ `AITM_L3=0`（退回旧 spawn 桥）。
  */
 import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -75,6 +76,26 @@ function pluginVersion() {
     return JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8'))?.version ?? '0.0.0';
   } catch {
     return '0.0.0';
+  }
+}
+
+/**
+ * 客户端半边（client.js）的指纹 —— 与 DSH 内核算 `&rev=` 的算法**逐字一致**
+ * （`dsh-client-modules` 的 `artifactRevision`：sha1("plugin-artifact"\0) + 各字段带长度前缀，取前 12 位）。
+ * 用途只有一个：界面上显示出来，好回答「我看到的这个面板，到底是哪一版 client.js？」
+ * —— 改了 client.js 却没生效时（浏览器缓存 / DSH 加载的是另一份安装 / 根本没 pull），
+ * 拿 DSH 网络面板里 `/plugins/??…/client.js&rev=xxxx` 的 xxxx 和这里比一下即可定位。
+ */
+function clientRevision() {
+  try {
+    const st = fs.statSync(path.join(PLUGIN_DIR, 'client.js'));
+    const hash = crypto.createHash('sha1').update('plugin-artifact').update('\0');
+    for (const part of [String(st.mtimeMs), String(st.ctimeMs), String(st.size)]) {
+      hash.update(`${String(Buffer.byteLength(part))}:`).update(part);
+    }
+    return hash.digest('hex').slice(0, 12);
+  } catch {
+    return null;
   }
 }
 
@@ -644,6 +665,8 @@ export function diagnose() {
     apiRevRequired: REQUIRED_API_REV,
     approve: DEFAULTS.approve,
     pluginVersion: pluginVersion(),
+    /** 客户端半边（client.js）指纹 —— 和 DSH 的 `&rev=` 同算法，用来回答「面板是哪一版」 */
+    clientRev: clientRevision(),
     /**
      * 后端来法（**实际会走哪条**，不只是配置）：l3（仓库内进程内 L3）/ vendor（包里自带内核）/
      * external（AITM_URL）/ spawn（AITM_L3=0 的旧桥）/ error（自检没过，起不来）。
@@ -812,6 +835,7 @@ export function apply(ctx) {
               repoProblem: preflightRepo(DEFAULTS.repo),
               vendorL3: vendorPresent(),
               pluginVersion: pluginVersion(),
+              clientRev: clientRevision(),
               apiRevRequired: REQUIRED_API_REV,
               identity: state.identity,
               log: state.log.slice(-8),

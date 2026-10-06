@@ -243,6 +243,18 @@ node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起
     里留着给离线渲染用，运行期一份都不许带**（verify-dist 专门断言 tarball 里没有 `node_modules/`）。
     peer 声明 `@deepseek-ai/dsh`（DSH 的版本兼容闸门读它：对不上会要 `dsh plugin allow-version`）。
 
+18. **「改了 `client.js` 却没生效」怎么一眼定位**（2026-10-06 用户实测踩到）：面板长相没变，
+    先别怀疑代码 —— 三处都可能：① 客户机上的仓库**没更新**（`git pull` 之后要重启 DSH）；
+    ② DSH 加载的是**另一份安装**（profile 里 `dsh plugin add` 装的老包 = 另一份 `client.js`；
+    `doctor.mjs` 第 ① 节的「插件目录」会告诉你它读的是哪一份）；③ 浏览器缓存了旧分片。
+    判据（三处的值必须相同）：
+    - `node scripts/doctor.mjs` → 「面板代码 client.js rev XXXXX」；
+    - 面板左上角健康点**悬停**（或 DSH 设置 → 我们的那一节 → 「面板」行）→ 同一个 rev；
+    - 浏览器 DevTools → Network → 过滤 `client.js` → URL 里的 `&rev=YYYY`。
+    三处一致 ⇒ 你看到的就是这份代码（那说明改的东西本来就不在这块）；不一致 ⇒ 就是上面① ② ③ 之一。
+    （DSH 的 `rev` 是 client.js 的 mtime/ctime/size 哈希，改文件一定变；它不变 = 它读的不是这个文件。）
+    兜底动作：重启 DSH 宿主 + 页面强刷（Ctrl+Shift+R）。
+
 17. **`jsx/jsxs` 的第三个参数是 `key`，不是孩子**（2026-10-06 写原生看板时踩的）：DSH 注入的是
     `react/jsx-runtime` 的 `jsx(type, props, key)` —— 孩子必须放进 `props.children`。写成
     `jsx('div', {}, child)` 不报错也不警告，只是渲染出一个**空 div**（当时现象：看板 7 个 `data-col`

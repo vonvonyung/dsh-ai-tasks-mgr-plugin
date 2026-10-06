@@ -12,6 +12,7 @@
  * 环境：AITM_REPO 指向 AI 任务台仓库（默认 /home/user/ai-tasks-mgr）
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -53,6 +54,20 @@ if (selfPkg?.name !== 'ai-tasks-mgr') {
 }
 
 const results = [];
+/**
+ * client.js 的指纹，算法与 DSH 的 `artifactRevision` **逐字一致**
+ * （`dsh-client-modules`：sha1("plugin-artifact"\0) + 各字段带长度前缀，取前 12 位）。
+ * ③ 会断言 boot 图里 DSH 算出来的 `ours.rev` 与它相等 —— 也就是说
+ * `doctor.mjs` 打印的这个值、DSH 实际加载的那份、用户在网络面板里看到的 `&rev=` 是同一个东西。
+ */
+const clientFileRev = () => {
+  const st = fs.statSync(path.join(ROOT, 'client.js'));
+  const hash = createHash('sha1').update('plugin-artifact').update('\0');
+  for (const part of [String(st.mtimeMs), String(st.ctimeMs), String(st.size)]) {
+    hash.update(`${String(Buffer.byteLength(part))}:`).update(part);
+  }
+  return hash.digest('hex').slice(0, 12);
+};
 /** 客户端半边声明的服务依赖（离线渲染那条里读出来，给 boot 图那条做「有没有人提供」用） */
 let clientInject = [];
 const check = (name, ok, extra = '') => {
@@ -792,6 +807,13 @@ async function checkDsh() {
   const boot = JSON.parse(/globalThis\["__DSH_BOOT__"\] = (\{.*?\})<\/script>/s.exec(html)?.[1] ?? '{}');
   const ours = (boot.entries ?? []).find((e) => e.id === 'dsh-plugin-aitm');
   check('③ 客户端半边进 boot 图', Boolean(ours), ours ? `${boot.entries.length} 条，rev=${ours.rev}` : '');
+  // 面板指纹：DSH 认的 rev 必须与我们在 doctor 里打印的那个一致（对不上，用户照 doctor 去核对就等于白查）
+  const fileRev = clientFileRev();
+  check(
+    '③\' boot 图里 client.js 的 rev 与 doctor 打印的指纹一致',
+    ours?.rev === fileRev,
+    `boot=${String(ours?.rev)} file=${fileRev}`,
+  );
 
   if (ours) {
     const chunk = await fetch(`http://127.0.0.1:${port}/plugins/${ours.url.replace('plugins/', '')}`, { headers: { cookie } });

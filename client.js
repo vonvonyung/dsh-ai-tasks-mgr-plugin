@@ -1306,7 +1306,14 @@ window.__ModuleLoader__.load({
               {
                 style: BAR,
                 children: [
-                  jsx.jsx('span', { style: DOT(ready), title: ready ? '后端正常' : '后端未就绪' }, 'dot'),
+                  jsx.jsx(
+                    'span',
+                    {
+                      style: DOT(ready),
+                      title: `${ready ? '后端正常' : '后端未就绪'}${cfg.clientRev ? ` · client.js rev ${cfg.clientRev}` : ''}`,
+                    },
+                    'dot',
+                  ),
                   tab('board', '看板'),
                   tab('calendar', '日历'),
                   tab('feed', '合集'),
@@ -1401,6 +1408,8 @@ window.__ModuleLoader__.load({
           row('后端', cfg.base ?? '(自动拉起)'),
           row('健康', cfg.loading ? '检查中…' : cfg.health?.ok ? `正常 · ${cfg.health.actions} 个动作` : '不可用'),
           row('版本', cfg.identity?.version ? `${cfg.identity.version}（apiRev=${String(rev ?? '?')}，需要 ≥ ${String(revRequired)}）` : cfg.base ? '旧版（health 里没有身份字段）' : '—'),
+          // 面板产物指纹：改了 client.js 却没生效时，拿 DSH 网络面板里 `&rev=` 的值和这里比一下
+          row('面板', cfg.pluginVersion ? `${cfg.pluginVersion}${cfg.clientRev ? ` · client.js rev ${cfg.clientRev}` : ''}` : '—'),
           row('数据目录', cfg.identity?.dataDir ?? cfg.health?.dataDir ?? '—'),
           row('仓库', cfg.repo ?? '—'),
           row('错误', cfg.error ?? '无'),

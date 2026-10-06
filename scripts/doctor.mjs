@@ -67,6 +67,9 @@ info(`后端来法   ${cfg.backendMode}${MODE_TEXT[cfg.backendMode] ?? ''}`);
 info(`AITM_SPAWN ${cfg.spawn ? '开' : '关（0）'}${cfg.backendMode === 'l3' ? '（L3 模式下用不到）' : ''}`);
 info(`L3 产物    ${cfg.l3Bundle}${cfg.l3BundlePresent ? '（有）' : '（缺 → 跑一次 npm run build）'}`);
 info(`面板产物   dist/index.html ${cfg.rendererDistPresent ? '有' : '缺 → 跑一次 npm run build'}`);
+// 客户端半边指纹：DSH 网络面板里 `/plugins/??…/client.js&rev=xxxx` 的 xxxx 应该与它一致；
+// 不一致就说明浏览器/宿主用的还是另一份 client.js（缓存、装的是旧包、或者根本没更新仓库）
+info(`面板代码   client.js rev ${cfg.clientRev ?? '(读不到)'} —— 对比 DSH 网络面板里 client.js 的 &rev=`);
 info(`要求 apiRev ≥ ${cfg.apiRevRequired}`);
 info(`登记表     ${cfg.registry}${fs.existsSync(cfg.registry) ? '（存在）' : '（无）'}`);
 info(`后端日志   ${cfg.backendLog}${fs.existsSync(cfg.backendLog) ? '（存在）' : '（无）'}`);
