@@ -87,7 +87,7 @@ if (cfg.backendMode === 'vendor') {
   bad(cfg.repoProblem);
   info('这就是「不能拉起后端」最常见的原因：仓库模式要 import 仓库里的 dist-server/l3.mjs。');
   info('修：① 设 AITM_REPO=<仓库绝对路径>（Windows: setx AITM_REPO D:\\...\\ai-tasks-mgr，重开终端），');
-  info('    或把 dsh-plugin/aitm.patch.yml 的 name: 指到目标仓库里的 dsh-plugin/index.js；');
+  info('    或让补丁指向目标仓库：node dsh-plugin/scripts/make-patch.mjs <仓库路径>（生成 aitm.patch.yml，不进 git）；');
   info('    ② 或者用分发版（自带内核，机器上不需要仓库）：dsh-plugin/README「同事怎么装」。');
   process.exit(1);
 } else {

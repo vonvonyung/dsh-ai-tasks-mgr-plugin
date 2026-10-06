@@ -1,0 +1,15 @@
+# 开发装法用的补丁（DSH 的 --patch 参数指向它）。
+#
+# 这个文件**每台机器都不一样**：`name:` 必须是本机 dsh-plugin/index.js 的绝对路径，
+# 所以它不进 git（dsh-plugin/aitm.patch.yml 在 .gitignore 里），需要时现生成：
+#
+#   node scripts/make-patch.mjs          # 在 dsh-plugin/ 下跑：生成 aitm.patch.yml（本机绝对路径）
+#   node dsh-plugin/scripts/make-patch.mjs <仓库路径>   # 也可以显式指定仓库
+#
+# 然后：npx -y @deepseek-ai/dsh@0.2.0-rc.2 web --patch <本文件> --no-open --port 3081
+#
+# 注意：发行包（`dsh plugin add` 装的那份）用的是 aitm.bundle.patch.yml —— 那份 `name:` 写的是
+# **包名**，随包发布；两个文件别混用（补丁写绝对路径会被 DSH 判成 declares no dsh.bundle）。
+- insert:
+    - id: aitm-plugin
+      name: "/absolute/path/to/ai-tasks-mgr/dsh-plugin/index.js"

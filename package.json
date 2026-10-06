@@ -40,7 +40,6 @@
     "index.js",
     "client.js",
     "supervisor.mjs",
-    "aitm.patch.yml",
     "aitm.bundle.patch.yml",
     "README.md",
     "scripts/",
