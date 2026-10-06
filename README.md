@@ -4,7 +4,7 @@
 
 ```
 ┌─ DSH 客户端 ───────────────────────────────────────────┐
-│  右侧栏：AI 任务台面板（日历原生 React，其它页 iframe）  │  ← 人看
+│  右侧栏：AI 任务台面板（看板/日历原生 React，合集 iframe）  │  ← 人看
 │  对话：模型调用 aitm_idea_list / task_start / …（11 个） │  ← 模型用
 │  设置：AI 任务台（后端地址 + 健康状态 + 后端来法）        │  ← 运维
 └────────────────────────────────────────────────────────┘
@@ -130,7 +130,12 @@
 - **原生日历**（M2 第四步）：右侧栏的「日历」不再套 iframe，而是 React 月历（`CalendarGrid` 纯展示 +
   `AitmCalendar` 取数）：42 格、周一起排、想法蓝点 / 收藏黄点、翻月 / 今天 / 刷新、当天明细。
   数据走插件自己的 `/api`（`idea.list` + `feed.get`），并订阅 `/api/events` 去抖刷新；
-  点一条想法 → 把 iframe 面板深链到 `?embed=1&view=board&idea=<id>`，直接落在那条详情上。
+  点一条想法 → 回**原生看板**并原地摊开那条详情。
+- **原生看板**（M3 逐页搬家第一页）：右侧栏的「看板」也不再套 iframe（`BoardCard` / `BoardColumn` +
+  `AitmBoard` 取数）。列序与列名是 `src/shared/labels.ts`（`IDEA_ORDER` / `IDEA_LABEL`）的副本，
+  与内核**逐字一致**（`verify-dsh` 会直接读那个文件比对）；筛选走**服务端查**（`idea.list` 带 q/status）、
+  计数一律取 `overview.get` 全量（R7）；拖拽改状态走 `idea.setStatus`，非法流转把内核原话显示出来。
+  点卡片在原地摊开详情（复用工具卡那张 `IdeaDetailCard`），要看对话/差异再点「在完整面板里打开」。
 
 ## 验证
 
@@ -138,7 +143,7 @@
 node scripts/verify-dist.mjs    # 12 项：**分发路径**（打 tarball → 解包 → 手工搭一个「pnpm 装完」的 profile
                                 #        → 在没有仓库的目录起 dsh web：mode=vendor / apiRev=2 / 63 个 action /
                                 #        面板静态产物可取 → 假模型跑工具 → 真命令 dsh plugin add 之后再跑一轮）
-node scripts/verify-dsh.mjs     # 61 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
+node scripts/verify-dsh.mjs     # 79 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
                                 #        （11 种卡片 + 注册 / 文案 + 失败 / 运行 / 兜底 / 异常块 + 两条日历网格）
                                 #        + 旧后端护栏 + 起前自检
                                 #        + 审批闸（写→ask / 只读→放行 / 缺参→deny / 下游优先 / 取消）
@@ -147,6 +152,9 @@ node scripts/verify-dsh.mjs     # 61 项：离线渲染 + 挂点护栏（不占 
                                 #        + 后端来法（默认进程内 L3 / AITM_URL / AITM_L3=0）+ 不留常驻后端进程
                                 #        + 工具层（真 L3 + 临时数据目录：11 个工具的输出过宿主同款 schema，含负例）
                                 #        + 原生日历的取数通道（postAction 打真 L3 / 报错抛出 / 跨源 OPTIONS 预检带 CORS 头）
+                                #        + 原生看板：列序/分桶/列渲染/空列/离线 7 列骨架、**与内核 labels.ts 逐字比对**、
+                                #          两份词典键一致（zh 57 / en 57）、数据面走 postAction（服务端筛选 / 全量计数 /
+                                #          星标写回 / 非法流转带原因）
 node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起后端、缺什么、后端日志尾巴
 ```
 
@@ -235,17 +243,24 @@ node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起
     里留着给离线渲染用，运行期一份都不许带**（verify-dist 专门断言 tarball 里没有 `node_modules/`）。
     peer 声明 `@deepseek-ai/dsh`（DSH 的版本兼容闸门读它：对不上会要 `dsh plugin allow-version`）。
 
+17. **`jsx/jsxs` 的第三个参数是 `key`，不是孩子**（2026-10-06 写原生看板时踩的）：DSH 注入的是
+    `react/jsx-runtime` 的 `jsx(type, props, key)` —— 孩子必须放进 `props.children`。写成
+    `jsx('div', {}, child)` 不报错也不警告，只是渲染出一个**空 div**（当时现象：看板 7 个 `data-col`
+    都在、卡片一张都没有）。离线渲染（`renderToStaticMarkup` + `verify-dsh`）一眼能看出来，别只在真机瞎猜。
+
 ## 面板里放什么
 
-- **日历页原生**：右侧栏的「日历」是插件的 React 组件（月历 + 当天明细），见上面的工具卡一节。
-- 其余页（看板 / 合集）仍是 iframe，打的是 `?embed=1&view=<board|feed>`：
+- **看板页原生**：右侧栏的「看板」是插件的 React 组件（七列 + 卡片 + 拖拽 + 原生详情），见上面的工具卡一节。
+- **日历页原生**：右侧栏的「日历」同上（月历 + 当天明细），点想法回看板摊详情。
+- 只剩两处 iframe：**「合集」这一页**，以及详情页里的**「在完整面板里打开」**（那里有对话/差异/属性，
+  属于完整面板的活）。iframe 打的是 `?embed=1&view=<board|feed>`：
   - `embed=1` 让我们界面**隐藏自己的侧栏和顶栏**（否则 DSH 里会出现两层导航）；
   - 自带一条极简切换（看板 / 日历 / 合集）；
-  - `&idea=<id>` 是深链：打开面板时直接落在那条想法的详情上（原生日历点想法就走它）。
+  - `&idea=<id>` 是深链：打开面板时直接落在那条想法的详情上（详情页「在完整面板里打开」就走它）。
 
 ## 已知边界
 
-- **日历已原生**（React，不再 iframe）；看板 / 合集仍是 iframe —— 逐页改造还在继续。
+- **看板与日历已原生**（React，不再 iframe）；**合集**仍是 iframe —— 逐页改造还在继续。
 - 后端默认是**进程内 L3**（M2 第三步）：内核跑在 DSH 自己的进程里，只留一个回环端口给 iframe；
   **不再 spawn 常驻后端**（所以也没有「复用旧实例」「关不掉的孤儿进程」这两类问题了）。
   两条逃生通道：`AITM_URL=<地址>` 连外部实例（保留旧后端护栏）、`AITM_L3=0` 退回 M1 的 spawn 桥。

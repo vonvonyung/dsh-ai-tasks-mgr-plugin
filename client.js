@@ -66,6 +66,30 @@ window.__ModuleLoader__.load({
       'card.running': '正在处理…',
       'card.fallback': 'AI 任务台',
       'card.noMeta': '（这次调用没有结构化数据，下面是原始返回）',
+      /* 原生看板（不走 iframe 的那块） */
+      'board.search': '搜索标题 / 正文',
+      'board.all': '全部状态',
+      'board.refresh': '刷新',
+      'board.dropHere': '拖想法到这里',
+      'board.star': '收藏',
+      'board.unstar': '取消收藏',
+      'board.repoGone': '仓库已删除',
+      'board.loading': '正在取想法…',
+      'board.empty': '这个筛选下没有想法',
+      'board.filteredNote': '（计数始终是全量）',
+      'board.counts': '全量：',
+      'board.running': '执行中 {n} · 排队 {n2}',
+      'board.back': '← 返回看板',
+      'board.openFull': '在完整面板里打开',
+      'board.detailLoading': '正在取详情…',
+      'board.setFailed': '改状态失败：{msg}',
+      'board.col.inbox': '灵感箱',
+      'board.col.scoping': '梳理中',
+      'board.col.ready': '可开发',
+      'board.col.developing': '开发中',
+      'board.col.review': '待验收',
+      'board.col.blocked': '受阻',
+      'board.col.done': '已完成',
     };
     const en = {
       'card.openPanel': 'Open in panel',
@@ -102,6 +126,30 @@ window.__ModuleLoader__.load({
       'card.running': 'Working…',
       'card.fallback': 'AI tasks',
       'card.noMeta': '(no structured payload for this call; raw result below)',
+      // 看板（M3 原生；列名与 `src/shared/labels.ts` 的 IDEA_LABEL 一一对应）
+      'board.search': 'Search title / body',
+      'board.all': 'All statuses',
+      'board.refresh': 'Refresh',
+      'board.dropHere': 'Drag an idea here',
+      'board.star': 'Star',
+      'board.unstar': 'Unstar',
+      'board.repoGone': 'repo deleted',
+      'board.loading': 'Loading ideas…',
+      'board.empty': 'No ideas under this filter',
+      'board.filteredNote': '(counts always cover everything)',
+      'board.counts': 'All: ',
+      'board.running': '{n} running · {n2} queued',
+      'board.back': '← Back to board',
+      'board.openFull': 'Open in full panel',
+      'board.detailLoading': 'Loading details…',
+      'board.setFailed': 'Could not change status: {msg}',
+      'board.col.inbox': 'Inbox',
+      'board.col.scoping': 'Scoping',
+      'board.col.ready': 'Ready',
+      'board.col.developing': 'Developing',
+      'board.col.review': 'Review',
+      'board.col.blocked': 'Blocked',
+      'board.col.done': 'Done',
     };
 
     /** 状态徽章配色（跟着 DSH 的语义色走，取不到就退回我们自己的） */
@@ -531,6 +579,418 @@ window.__ModuleLoader__.load({
     ];
 
 
+    /* ─────────── 原生看板（不走 iframe） ─────────── */
+
+    /**
+     * 列序与文案**抄内核**（`src/shared/labels.ts` 的 IDEA_ORDER / IDEA_LABEL）：
+     * 归档不进看板、受阻排在待验收之后。插件是独立包，不能 import 仓库源码，所以这里是副本 ——
+     * 改内核那份时记得同步（verify-dsh 有断言钉住列序）。
+     *
+     * 写法注意：DSH 给的是 `react/jsx-runtime` 的 `jsx/jsxs`，签名是 **(type, props, key)** ——
+     * 第三个参数是 key、不是 children！孩子必须写进 `props.children`（踩过一次：写成位置参数 →
+     * 渲染出来是个空 div）。
+     */
+    const IDEA_ORDER = ['inbox', 'scoping', 'ready', 'developing', 'review', 'blocked', 'done'];
+    const IDEA_LABEL = {
+      zh: { inbox: '灵感箱', scoping: '梳理中', ready: '可开发', developing: '开发中', review: '待验收', blocked: '受阻', done: '已完成' },
+      en: { inbox: 'Inbox', scoping: 'Scoping', ready: 'Ready', developing: 'Developing', review: 'Review', blocked: 'Blocked', done: 'Done' },
+    };
+
+    const BOARD = {
+      wrap: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
+      toolbar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
+      input: {
+        flex: 1,
+        minWidth: 90,
+        background: 'transparent',
+        color: 'inherit',
+        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+        borderRadius: 6,
+        padding: '2px 7px',
+        fontSize: 12,
+        outline: 'none',
+      },
+      select: {
+        background: 'transparent',
+        color: 'inherit',
+        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+        borderRadius: 6,
+        padding: '1px 4px',
+        fontSize: 12,
+      },
+      counts: { padding: '4px 10px 5px', opacity: 0.7, fontSize: 11.5, borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none' },
+      cols: { display: 'flex', gap: 6, padding: '6px 8px 8px', overflowX: 'auto', alignItems: 'flex-start', flex: 1, minHeight: 0, overflowY: 'auto' },
+      col: (over) => ({
+        flex: 'none',
+        width: 172,
+        background: over ? 'var(--dsh-color-fill, rgba(127,127,127,0.10))' : 'transparent',
+        borderRadius: 8,
+        padding: 4,
+        minHeight: 40,
+        border: `1px dashed ${over ? 'var(--dsh-color-border, rgba(127,127,127,0.6))' : 'transparent'}`,
+      }),
+      colHead: { display: 'flex', alignItems: 'center', gap: 5, padding: '2px 4px 6px' },
+      card: (sel) => ({
+        background: 'var(--dsh-color-fill, rgba(127,127,127,0.08))',
+        border: `1px solid ${sel ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.22))'}`,
+        borderRadius: 8,
+        padding: '6px 7px',
+        marginBottom: 5,
+        cursor: 'pointer',
+        userSelect: 'none',
+      }),
+      cardTitle: { display: 'flex', alignItems: 'flex-start', gap: 4, lineHeight: 1.35, wordBreak: 'break-word' },
+      meta: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 5, opacity: 0.75, fontSize: 11, flexWrap: 'wrap' },
+      star: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0, flex: 'none', opacity: 0.85, fontSize: 13, lineHeight: 1 },
+      link: { cursor: 'pointer', opacity: 0.75, flex: 'none' },
+    };
+
+    /** 按状态分桶（纯函数，verify 离线断言它）；列序里没有的状态（如 archived）不进看板 */
+    function groupByStatus(ideas) {
+      const out = {};
+      for (const st of IDEA_ORDER) out[st] = [];
+      for (const i of ideas ?? []) if (out[i.status]) out[i.status].push(i);
+      return out;
+    }
+
+    const priText = (p) => (p === 'p0' ? 'P0' : p === 'p1' ? 'P1' : p === 'p2' ? 'P2' : p === 'p3' ? 'P3' : '');
+
+    /** 相对时间（与桌面 `ui.tsx` 的 relTime 逐字一致 —— 同一条想法在两处不能显示成两个时间） */
+    function relTime(ts) {
+      if (!ts) return '—';
+      const min = Math.floor((Date.now() - ts) / 60_000);
+      if (min < 1) return '刚刚';
+      if (min < 60) return `${String(min)} 分钟前`;
+      const h = Math.floor(min / 60);
+      if (h < 24) return `${String(h)} 小时前`;
+      const d = Math.floor(h / 24);
+      if (d < 30) return `${String(d)} 天前`;
+      return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+    }
+
+    /** 小卡片（纯展示）：标题 / 正文一行 / 优先级 / 标签 / 任务数 / 仓库 / 相对时间 */
+    function BoardCard(props) {
+      const { idea, repo, taskCount, running, selected, onOpen, onStar, onDragStart, onDragEnd, t } = props;
+      const pri = priText(idea.priority);
+      const meta = [
+        pri ? jsx.jsx('span', { children: pri }, 'pri') : null,
+        ...(idea.tags ?? []).slice(0, 2).map((tag) => jsx.jsx('span', { children: `#${String(tag)}` }, String(tag))),
+        jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+        taskCount ? jsx.jsx('span', { style: { color: running ? 'var(--dsh-color-accent, #4a8cff)' : undefined }, children: `⌘ ${String(taskCount)}` }, 'tasks') : null,
+        repo ? jsx.jsx('span', { children: repo }, 'repo') : null,
+        jsx.jsx('span', { children: relTime(idea.updatedAt) }, 'time'),
+      ].filter(Boolean);
+      return jsx.jsx('article', {
+        style: BOARD.card(selected),
+        draggable: true,
+        'data-idea': idea.id,
+        onDragStart: (e) => {
+          try {
+            e.dataTransfer.setData('text/idea-id', idea.id);
+            e.dataTransfer.effectAllowed = 'move';
+          } catch {
+            /* 某些环境拿不到 dataTransfer，靠 state 兜底 */
+          }
+          onDragStart?.(idea.id);
+        },
+        onDragEnd: () => onDragEnd?.(),
+        onClick: () => onOpen?.(idea.id),
+        children: [
+          jsx.jsxs('div', { style: BOARD.cardTitle, children: [
+            jsx.jsx('span', { style: { flex: 1 }, children: String(idea.title ?? '(无标题)') }, 'title'),
+            jsx.jsx('button', {
+              type: 'button',
+              title: idea.starred ? t('board.unstar') : t('board.star'),
+              style: BOARD.star,
+              onClick: (e) => {
+                e.stopPropagation();
+                onStar?.(idea.id);
+              },
+              children: idea.starred ? '★' : '☆',
+            }, 'star'),
+          ] }, 'head'),
+          idea.description
+            ? jsx.jsx('div', { style: { opacity: 0.7, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, children: String(idea.description).slice(0, 60) }, 'desc')
+            : null,
+          jsx.jsx('div', { style: BOARD.meta, children: meta }, 'meta'),
+        ].filter(Boolean),
+      });
+    }
+
+    /** 一列（纯展示 + 拖放目标） */
+    function BoardColumn(props) {
+      const { status, ideas, repos, tasks, selected, onOpen, onStar, onDrop, onDragStart, onDragEnd, t } = props;
+      const [over, setOver] = react.useState(false);
+      const repoName = (id) => (id ? (repos.find((r) => r.id === id)?.name ?? t('board.repoGone')) : null);
+      return jsx.jsxs('div', {
+        style: BOARD.col(over),
+        'data-col': status,
+        onDragOver: (e) => {
+          e.preventDefault();
+          setOver(true);
+        },
+        onDragLeave: () => setOver(false),
+        onDrop: (e) => {
+          e.preventDefault();
+          setOver(false);
+          let id = null;
+          try {
+            id = e.dataTransfer.getData('text/idea-id');
+          } catch {
+            /* 见上 */
+          }
+          if (id) onDrop?.(id, status);
+        },
+        children: [
+          jsx.jsxs('div', { style: BOARD.colHead, children: [
+            jsx.jsx('span', { style: { fontWeight: 600 }, children: t(`board.col.${status}`) }, 'label'),
+            jsx.jsx('span', { style: { opacity: 0.6 }, children: String(ideas.length) }, 'n'),
+          ] }, 'head'),
+          ideas.length
+            ? jsx.jsx('div', {
+                children: ideas.map((idea) =>
+                  jsx.jsx(
+                    BoardCard,
+                    {
+                      idea,
+                      repo: repoName(idea.repoId),
+                      taskCount: tasks.filter((x) => x.ideaId === idea.id).length,
+                      running: tasks.some((x) => x.ideaId === idea.id && (x.status === 'running' || x.status === 'queued')),
+                      selected: selected === idea.id,
+                      onOpen,
+                      onStar,
+                      onDragStart,
+                      onDragEnd,
+                      t,
+                    },
+                    idea.id,
+                  ),
+                ),
+              }, 'cards')
+            : jsx.jsx('div', { style: { opacity: 0.5, textAlign: 'center', padding: '8px 2px' }, children: t('board.dropHere') }, 'empty'),
+        ],
+      });
+    }
+
+    /**
+     * 原生看板（有数据的那一层）。
+     *
+     * 与桌面面板**同一份口径**：列序 / 文案抄 `src/shared/labels.ts`；筛选是**服务端按条件查**
+     * （`idea.list` 带 q / status —— 不是前端过滤，桌面那边为这条踩过 bug）；
+     * 计数永远取 `overview.get` 的全量（R7：筛选下生命周期计数不变）。
+     * 拖拽改状态走 `idea.setStatus`（内核校验合法流转，非法流转把原因原样显示出来）。
+     */
+    function AitmBoard({ base, onOpenFull, initialIdea }) {
+      const [q, setQ] = react.useState('');
+      const [status, setStatus] = react.useState('all');
+      const [data, setData] = react.useState({ loading: true, ideas: [], overview: null, repos: [], tasks: [], error: null });
+      const [detail, setDetail] = react.useState(null); // {loading, id, meta?, error?}
+      const [note, setNote] = react.useState(null);
+      const qRef = react.useRef(q);
+      qRef.current = q;
+      const loadRef = react.useRef(null); // 给事件流用：不进依赖，免得一改筛选就重连
+
+      const t = (k, vars) => String(zh[k] ?? en[k] ?? k).replace(/\{(\w+)\}/g, (m, n) => (vars && n in vars ? String(vars[n]) : m));
+
+      const openDetail = react.useCallback(
+        async (id) => {
+          setDetail({ loading: true, id });
+          try {
+            const d = await postAction(base, 'idea.get', id);
+            setDetail({ loading: false, id, meta: detailMeta(d) });
+          } catch (err) {
+            setDetail({ loading: false, id, error: String(err?.message ?? err) });
+          }
+        },
+        [base],
+      );
+
+      const load = react.useCallback(
+        async (opts = {}) => {
+          if (!base) return;
+          const useQ = opts.q ?? qRef.current;
+          const useStatus = opts.status ?? status;
+          setData((d) => ({ ...d, loading: true }));
+          try {
+            const [ideas, overview, repos, tasks] = await Promise.all([
+              postAction(base, 'idea.list', { ...(useQ ? { q: useQ } : {}), ...(useStatus === 'all' ? {} : { status: useStatus }) }),
+              postAction(base, 'overview.get', {}),
+              postAction(base, 'repo.list', {}),
+              postAction(base, 'task.list', {}),
+            ]);
+            setData({
+              loading: false,
+              ideas: Array.isArray(ideas) ? ideas : [],
+              overview,
+              repos: Array.isArray(repos) ? repos : [],
+              tasks: Array.isArray(tasks) ? tasks : [],
+              error: null,
+            });
+          } catch (err) {
+            setData((d) => ({ ...d, loading: false, error: String(err?.message ?? err) }));
+          }
+        },
+        [base, status],
+      );
+
+      react.useEffect(() => {
+        void load();
+      }, [load]);
+
+      // 别处（原生日历、工具卡）点了某条想法 → 直接把它的详情摊开
+      react.useEffect(() => {
+        if (initialIdea) void openDetail(initialIdea);
+      }, [initialIdea, openDetail]);
+
+      loadRef.current = load;
+
+      // 搜索框：停手 250ms 再查（服务端查询，见桌面那条「改条件就必须重查」的经验）
+      react.useEffect(() => {
+        const timer = setTimeout(() => void load({ q }), 250);
+        return () => clearTimeout(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [q]);
+
+      // 事件流：面板/工具那边改了数据（记想法、改状态、任务状态），这里自动跟一次（400ms 去抖）
+      react.useEffect(() => {
+        if (!base || typeof EventSource !== 'function') return undefined;
+        let timer = null;
+        let es = null;
+        try {
+          es = new EventSource(`${base}/api/events`);
+          es.onmessage = () => {
+            if (timer) return;
+            timer = setTimeout(() => {
+              timer = null;
+              void loadRef.current?.();
+            }, 400);
+          };
+        } catch {
+          /* 不支持就算了，反正有「刷新」 */
+        }
+        return () => {
+          if (timer) clearTimeout(timer);
+          try {
+            es?.close();
+          } catch {
+            /* 已关 */
+          }
+        };
+      }, [base]);
+
+      const changeStatus = async (id, to) => {
+        const idea = data.ideas.find((i) => i.id === id);
+        if (!idea || idea.status === to) return;
+        setNote(null);
+        try {
+          await postAction(base, 'idea.setStatus', { id, status: to });
+          await load();
+        } catch (err) {
+          // 内核拒绝非法流转时把原因**原样**给出来（别只说「失败了」）
+          setNote(t('board.setFailed', { msg: String(err?.message ?? err) }));
+        }
+      };
+
+      const toggleStar = async (id) => {
+        try {
+          await postAction(base, 'idea.toggleStar', id);
+          await load();
+        } catch (err) {
+          setNote(String(err?.message ?? err));
+        }
+      };
+
+      if (detail) {
+        return jsx.jsxs('div', { style: BOARD.wrap, 'data-board': 'detail', children: [
+          jsx.jsxs('div', { style: BOARD.toolbar, children: [
+            jsx.jsx('a', { style: BOARD.link, onClick: () => setDetail(null), children: t('board.back') }, 'back'),
+            jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+            onOpenFull ? jsx.jsx('a', { style: BOARD.link, onClick: () => onOpenFull(detail.id), children: t('board.openFull') }, 'full') : null,
+          ] }, 'bar'),
+          detail.loading
+            ? jsx.jsx('div', { style: { padding: 14, opacity: 0.8 }, children: t('board.detailLoading') }, 'loading')
+            : detail.error
+              ? jsx.jsx('div', { style: { padding: 14, opacity: 0.9 }, children: `${t('card.idea.failed')}：${detail.error}` }, 'err')
+              : jsx.jsx('div', { style: { padding: '2px 6px 10px', overflowY: 'auto' }, children: jsx.jsx(IdeaDetailCard, { meta: detail.meta, t }) }, 'card'),
+        ] });
+      }
+
+      const buckets = groupByStatus(data.ideas);
+      const counts = data.overview?.counts ?? {};
+      return jsx.jsxs('div', { style: BOARD.wrap, 'data-board': 'board', children: [
+        jsx.jsxs('div', { style: BOARD.toolbar, children: [
+          jsx.jsx('input', {
+            style: BOARD.input,
+            placeholder: t('board.search'),
+            value: q,
+            onChange: (e) => setQ(e.target.value),
+            'data-board-search': '1',
+          }, 'q'),
+          jsx.jsxs('select', {
+            style: BOARD.select,
+            value: status,
+            onChange: (e) => setStatus(e.target.value),
+            'data-board-status': '1',
+            children: [
+              jsx.jsx('option', { value: 'all', children: t('board.all') }, 'all'),
+              ...IDEA_ORDER.map((st) => jsx.jsx('option', { value: st, children: t(`board.col.${st}`) }, st)),
+            ],
+          }, 'st'),
+          jsx.jsx('a', { style: BOARD.link, onClick: () => void load(), children: t('board.refresh') }, 'reload'),
+        ] }, 'bar'),
+        jsx.jsxs('div', { style: BOARD.counts, children: [
+          jsx.jsx('span', { children: `${t('board.counts')}${IDEA_ORDER.map((st) => `${t(`board.col.${st}`)} ${String(counts[st] ?? 0)}`).join(' · ')}` }, 'counts'),
+          data.overview && (data.overview.running || data.overview.queued)
+            ? jsx.jsx('span', { style: { marginLeft: 6 }, children: `｜${t('board.running', { n: String(data.overview.running ?? 0), n2: String(data.overview.queued ?? 0) })}` }, 'run')
+            : null,
+          jsx.jsx('span', { style: { marginLeft: 6, opacity: 0.7 }, children: `｜${t('board.filteredNote')}` }, 'note'),
+        ] }, 'counts'),
+        note ? jsx.jsx('div', { style: { padding: '4px 10px', color: 'var(--dsh-color-danger, #d35)', fontSize: 11.5 }, 'data-board-note': '1', children: note }, 'note') : null,
+        data.error ? jsx.jsx('div', { style: { padding: '6px 10px', opacity: 0.9 }, children: `${t('card.idea.failed')}：${data.error}` }, 'err') : null,
+        jsx.jsxs('div', { style: BOARD.cols, children: [
+          ...IDEA_ORDER.map((st) =>
+            jsx.jsx(
+              BoardColumn,
+              {
+                status: st,
+                ideas: buckets[st] ?? [],
+                repos: data.repos,
+                tasks: data.tasks,
+                selected: detail?.id ?? null,
+                onOpen: (id) => void openDetail(id),
+                onStar: (id) => void toggleStar(id),
+                onDrop: (id, to) => void changeStatus(id, to),
+                onDragStart: () => {},
+                onDragEnd: () => {},
+                t,
+              },
+              st,
+            ),
+          ),
+          data.loading && !data.ideas.length ? jsx.jsx('div', { style: { padding: 10, opacity: 0.7, flex: 'none' }, children: t('board.loading') }, 'loading') : null,
+          !data.loading && !data.ideas.length && !data.error ? jsx.jsx('div', { style: { padding: 10, opacity: 0.7, flex: 'none' }, children: t('board.empty') }, 'empty') : null,
+        ].filter(Boolean) }, 'cols'),
+      ] });
+    }
+
+    /** `idea.get` 的返回 → 详情卡的 meta（与 aitm_idea_get 的 presentationMeta 同形，直接复用那张卡） */
+    function detailMeta(d) {
+      const idea = d?.idea ?? {};
+      return {
+        kind: 'idea-detail',
+        id: idea.id,
+        title: idea.title,
+        status: idea.status,
+        tags: idea.tags ?? [],
+        priority: idea.priority ?? null,
+        description: idea.description ?? '',
+        spec: idea.spec ? String(idea.spec) : null,
+        repo: d?.repo?.name ?? null,
+        tasks: (d?.tasks ?? []).slice(0, 8).map((x) => ({ id: x.id, status: x.status, turns: x.turns ?? 0 })),
+      };
+    }
+
+
     /* ─────────── 原生日历（不走 iframe，直接是 DSH 里的 React 组件） ─────────── */
 
     /** 一周从周一开始（与面板/日历页同口径，见 src/shared/calendar.ts） */
@@ -808,7 +1268,9 @@ window.__ModuleLoader__.load({
       const [cfg, reload] = useAitmConfig();
       const [nonce, setNonce] = react.useState(0);
       const [view, setView] = react.useState('board');
-      /** 原生日历里点了某条想法 → 让 iframe 带着这个 id 打开（面板支持 `&idea=<id>` 深链） */
+      /** 原生日历点想法 → 原生看板直接把详情摊开（不再切 iframe） */
+      const [boardIdea, setBoardIdea] = react.useState(null);
+      /** 「在完整面板里打开」→ iframe 带 id（面板支持 `&idea=<id>` 深链，那边有对话/差异/属性） */
       const [embedIdea, setEmbedIdea] = react.useState(null);
       const ready = Boolean(cfg.base) && cfg.health?.ok;
       // 后端身份：老实例（apiRev 不够）不能装作可用 —— 否则工具会报「未知接口：feed.get」
@@ -822,7 +1284,12 @@ window.__ModuleLoader__.load({
           'a',
           {
             style: { cursor: 'pointer', textDecoration: 'none', opacity: view === id ? 1 : 0.55, fontWeight: view === id ? 600 : 400, fontSize: 12 },
-            onClick: () => setView(id),
+            onClick: () => {
+              // 切页签 = 收回「深链到 iframe 的那条」；离开看板也清掉它那条深链
+              setEmbedIdea(null);
+              if (id !== 'board') setBoardIdea(null);
+              setView(id);
+            },
             children: text,
           },
           id,
@@ -849,10 +1316,13 @@ window.__ModuleLoader__.load({
               },
               'bar',
             ),
-            ready && view === 'calendar'
-              ? // 日历是**原生 React**（不是 iframe）：在 DSH 右侧栏里更跟手、跟主题一致，
-                // 点想法还能把 iframe 面板带到那条想法的详情上。
-                jsx.jsx(AitmCalendar, { base: cfg.base, onOpenIdea: (id) => { setEmbedIdea(id); setView('board'); } })
+            ready && view === 'board' && !embedIdea
+              ? // 看板也是**原生 React**（M3：逐页搬家）——列序/文案/服务端筛选都与桌面一致，
+                // 点卡片在原地摊开详情；要对话/差异/属性再走「在完整面板里打开」的 iframe。
+                jsx.jsx(AitmBoard, { base: cfg.base, initialIdea: boardIdea, onOpenFull: (id) => setEmbedIdea(id) })
+              : ready && view === 'calendar'
+              ? // 日历同样是原生 React：在 DSH 右侧栏里更跟手、跟主题一致；点想法回看板摊开详情。
+                jsx.jsx(AitmCalendar, { base: cfg.base, onOpenIdea: (id) => { setBoardIdea(id); setView('board'); } })
               : ready
               ? jsx.jsx('iframe', {
                   key: `${nonce}-${view}-${embedIdea ?? ''}`,
@@ -1016,9 +1486,11 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid };
+    exports.__components = { AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
     exports.__calendarHelpers = { monthGridDays, shiftMonth, dayKeyLocal, groupByDayLocal, monthLabel, dayLabel, postAction };
+    /** 给 verify 用：看板的列序 / 分桶 / 相对时间（纯计算，不依赖 React） */
+    exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime };
     /** 给 verify 用：客户端半边依赖的服务名（每个都必须有提供者，否则整块 pending → 白屏） */
     exports.__clientInject = [...inject];
     /** 给 verify 用：卡片注册了哪些工具名 */

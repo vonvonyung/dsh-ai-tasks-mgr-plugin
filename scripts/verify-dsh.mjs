@@ -280,6 +280,104 @@ async function checkRender() {
   const noMetaHtml = render({ phase: 'result', block: resultBlock(undefined, '已记进想法箱：X（idea-1，状态 inbox）') });
   check('兜底：没有 meta 时收原始文本，不是空白', noMetaHtml.includes('idea-1') && noMetaHtml.includes('原始返回'));
 
+  /* ---- 原生看板（M3：看板也搬进插件了）---- */
+  const B = loaded.exports.__boardHelpers;
+  check(
+    '看板列序与内核一致（7 列，归档不进看板）',
+    JSON.stringify(B.IDEA_ORDER) === JSON.stringify(['inbox', 'scoping', 'ready', 'developing', 'review', 'blocked', 'done']),
+    B.IDEA_ORDER.join(', '),
+  );
+  const bucketed = B.groupByStatus([
+    { id: 'a', status: 'ready' },
+    { id: 'b', status: 'inbox' },
+    { id: 'c', status: 'ready' },
+    { id: 'd', status: 'archived' }, // 不在列序里 → 不出现（与桌面的 IDEA_ORDER 口径一致）
+  ]);
+  check(
+    '看板分桶：按状态归位，未在列序里的状态被丢掉',
+    bucketed.ready.length === 2 && bucketed.inbox.length === 1 && Object.keys(bucketed).length === 7 && !Object.keys(bucketed).includes('archived'),
+    `ready=${String(bucketed.ready.length)} inbox=${String(bucketed.inbox.length)} keys=${Object.keys(bucketed).length}`,
+  );
+  check('相对时间与桌面同口径', B.relTime(Date.now() - 30_000) === '刚刚' && /分钟前$/.test(B.relTime(Date.now() - 5 * 60_000)) && B.relTime(null) === '—');
+
+  const BoardCol = loaded.exports.__components.BoardColumn;
+  const colHtml = renderToStaticMarkup(React.createElement(BoardCol, {
+    status: 'ready',
+    ideas: [
+      { id: 'i_1', title: '给日历加导出', description: '导出成 .ics 订阅', status: 'ready', priority: 'p1', tags: ['日历', '导出'], repoId: 'r1', starred: true, updatedAt: Date.now() - 3_600_000 },
+      { id: 'i_2', title: '看板原生', status: 'ready', priority: 'p2', tags: [], repoId: null, starred: false, updatedAt: Date.now() },
+    ],
+    repos: [{ id: 'r1', name: 'demo-app' }],
+    tasks: [{ id: 't1', ideaId: 'i_1', status: 'running' }, { id: 't2', ideaId: 'i_1', status: 'succeeded' }],
+    selected: null,
+    onOpen: () => {},
+    onStar: () => {},
+    onDrop: () => {},
+    t: (k) => k,
+  }));
+  check(
+    '看板列：列头 + 两张卡（标题/优先级/标签/任务数/仓库/相对时间都在）',
+    colHtml.includes('data-col="ready"') &&
+      (colHtml.match(/data-idea=/g) ?? []).length === 2 &&
+      colHtml.includes('给日历加导出') &&
+      colHtml.includes('P1') &&
+      colHtml.includes('#日历') &&
+      colHtml.includes('demo-app') &&
+      colHtml.includes('1 小时前'),
+  );
+  const emptyColHtml = renderToStaticMarkup(React.createElement(BoardCol, {
+    status: 'done', ideas: [], repos: [], tasks: [], selected: null, onOpen: () => {}, onStar: () => {}, onDrop: () => {}, t: (k) => k,
+  }));
+  check('空列给「拖想法到这里」（不是一片空白）', emptyColHtml.includes('board.dropHere'));
+
+  /* ---- 看板的口径钉在内核上：插件是独立包、不能 import 仓库源码，所以那几份副本
+     （列序 / 列名）必须与 `src/shared/labels.ts` **逐字**一致 —— 内核改了这里就得跟着改。 ---- */
+  const labelsSrc = fs.readFileSync(path.join(REPO, 'src', 'shared', 'labels.ts'), 'utf8');
+  const kernelOrder = [...(labelsSrc.match(/IDEA_ORDER[^=]*=\s*\[([^\]]*)\]/)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  const labelBlock = labelsSrc.slice(labelsSrc.indexOf('IDEA_LABEL'));
+  const kernelLabels = Object.fromEntries(
+    [...labelBlock.slice(0, labelBlock.indexOf('};')).matchAll(/(\w+)\s*:\s*'([^']+)'/g)].map((m) => [m[1], m[2]]),
+  );
+  check(
+    '看板列序＝内核 IDEA_ORDER（7 列，副本没跑偏）',
+    kernelOrder.length === 7 && JSON.stringify(kernelOrder) === JSON.stringify(B.IDEA_ORDER),
+    `内核 ${kernelOrder.join(',')}`,
+  );
+  const dictNs = Object.keys(locales)[0];
+  check('词典注册在 aitm 命名空间', dictNs === 'aitm', String(dictNs ?? '(没注册)'));
+  const dict = locales[dictNs] ?? {};
+  const zhCols = B.IDEA_ORDER.map((st) => dict.zh?.[`board.col.${st}`]);
+  const enCols = B.IDEA_ORDER.map((st) => dict.en?.[`board.col.${st}`]);
+  check(
+    '列名＝内核 IDEA_LABEL（逐字，7 列）',
+    zhCols.join('/') === B.IDEA_ORDER.map((st) => kernelLabels[st]).join('/'),
+    zhCols.join(' / '),
+  );
+  check(
+    '英文列名不缺（en 里是英文，不是掉回中文）',
+    B.IDEA_ORDER.every((st) => typeof dict.en?.[`board.col.${st}`] === 'string' && dict.en[`board.col.${st}`] !== dict.zh[`board.col.${st}`]),
+    enCols.join(' / '),
+  );
+  const zhKeys = Object.keys(dict.zh ?? {}).sort();
+  const enKeys = Object.keys(dict.en ?? {}).sort();
+  check(
+    '两份词典键完全一致（缺英文 → 英文界面掉回中文/键名，踩过一次）',
+    zhKeys.length > 0 && JSON.stringify(zhKeys) === JSON.stringify(enKeys),
+    `zh ${String(zhKeys.length)} / en ${String(enKeys.length)}`,
+  );
+  check(
+    'IDEA_LABEL 副本与词典同源（插件内部不打架）',
+    B.IDEA_ORDER.every((st) => B.IDEA_LABEL.zh[st] === dict.zh?.[`board.col.${st}`]),
+  );
+
+  const BoardPanel = loaded.exports.__components.AitmBoard;
+  const boardHtml = renderToStaticMarkup(React.createElement(BoardPanel, { base: null, onOpenFull: () => {} }));
+  check(
+    '看板离线渲染：7 个列骨架都在（服务端渲染不跑 effect，但结构要在）',
+    (boardHtml.match(/data-col=/g) ?? []).length === 7 && boardHtml.includes('data-board="board"'),
+    `${boardHtml.length} 字节`,
+  );
+
   /* ---- 原生日历（不走 iframe 的那块）---- */
   const H = loaded.exports.__calendarHelpers;
   const gridDays = H.monthGridDays(2026, 9, new Date(2026, 9, 6).getTime()); // 2026-10（月份从 0 数）
@@ -587,6 +685,50 @@ async function checkTools() {
         `HTTP ${String(pre.code)} · allow-headers=${String(pre.headers['access-control-allow-headers'] ?? '(无)')}`,
       );
     }
+
+    /* ---- 看板的数据面：走**面板同款通道**（插件自己的 /api + postAction）----
+       看板不经过工具层，是浏览器直接打 `/api/<action>`；所以这里也照那条路验一遍，
+       顺带证明这几个 action 在插件自己的端口上都存在（旧后端会在这里 404「未知接口」）。 */
+    const boardBase = await host.ensureBase();
+    const boardCalls = ['idea.list', 'overview.get', 'repo.list', 'task.list'];
+    let boardMissing = null;
+    for (const action of boardCalls) {
+      try {
+        await post(boardBase, action, action === 'idea.list' ? {} : {});
+      } catch (err) {
+        boardMissing = `${action}: ${String(err?.message ?? err)}`;
+        break;
+      }
+    }
+    check('看板的取数通道都在（idea.list / overview.get / repo.list / task.list）', !boardMissing, boardMissing ?? '');
+
+    const readyOne = await tools.get('aitm_idea_create').execute({ title: '看板验收：准备开工的一条', tags: ['看板'] });
+    await post(boardBase, 'idea.setStatus', { id: readyOne.id, status: 'ready' });
+    // ① 服务端按状态查（不是前端过滤）
+    const onlyReady = await post(boardBase, 'idea.list', { status: 'ready' });
+    check('看板筛选：idea.list{status} 只回那一档', Array.isArray(onlyReady) && onlyReady.length === 1 && onlyReady[0].id === readyOne.id, `返回 ${String(onlyReady?.length)} 条`);
+    // ② 关键词查
+    const byQ = await post(boardBase, 'idea.list', { q: '看板验收' });
+    check('看板筛选：idea.list{q} 按关键词查', Array.isArray(byQ) && byQ.length === 1 && /看板验收/.test(byQ[0].title), `返回 ${String(byQ?.length)} 条`);
+    // ③ 计数是全量（R7：筛选下生命周期计数不变）
+    const ov = await post(boardBase, 'overview.get', {});
+    check(
+      '看板计数：overview 不受筛选影响（全量 3 条 = 2 灵感箱 + 1 可开发）',
+      ov?.counts?.inbox === 2 && ov?.counts?.ready === 1 && ov?.totalIdeas === 3,
+      JSON.stringify(ov?.counts),
+    );
+    // ④ 星标（卡片右上角那颗）
+    const starred = await post(boardBase, 'idea.toggleStar', readyOne.id);
+    check('看板星标：toggleStar 真的改了', starred?.starred === true, `starred=${String(starred?.starred)}`);
+    // ⑤ 非法流转要带原因（看板把它原样显示给用户）
+    let illegal = null;
+    try {
+      await post(boardBase, 'idea.setStatus', { id: readyOne.id, status: 'inbox' });
+    } catch (err) {
+      illegal = String(err?.message ?? err);
+    }
+    check('看板拖拽：非法流转被内核拒绝并给出原因', Boolean(illegal) && /流转|状态/.test(illegal), String(illegal).slice(0, 80));
+
   } finally {
     await host?.stop?.().catch?.(() => undefined);
     if (savedHome === undefined) delete process.env.AI_TASKS_HOME;
