@@ -35,10 +35,66 @@ const dshArgs = (rest) => [DSH_ENTRY, ...rest];
 const PATCH = path.join(ROOT, 'aitm.patch.yml');
 
 const results = [];
+/** 客户端半边声明的服务依赖（离线渲染那条里读出来，给 boot 图那条做「有没有人提供」用） */
+let clientInject = [];
 const check = (name, ok, extra = '') => {
   results.push({ name, ok, extra });
   console.log(`   ${ok ? '✓' : '✗'} ${name}${extra ? ` — ${extra}` : ''}`);
   return ok;
+};
+
+/**
+ * 读 DSH 的会话日志，取出全部事件记录。
+ *
+ * 为什么需要它：`dsh --json`（headless）只吐 type/callId/status/result 五个字段，
+ * **不带 meta**；而卡片的数据来源恰恰是 `tool/result` 记录的 `data.meta`（客户端 ToolResultNode.meta）。
+ * 所以断言「presentationMeta 真的落盘了」只能读会话日志。
+ *
+ * 坑：`session.v4.jsonl.zstd` 是**多帧 zstd**（每次 append 一帧），一次
+ * `zstdDecompressSync(整文件)` 只解出第一帧（189 字节）——必须按魔数切帧逐帧解。
+ */
+const readSessionEvents = (home) => {
+  const zlib = require('node:zlib');
+  if (typeof zlib.zstdDecompressSync !== 'function') return { skipped: true, records: [] };
+  const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+  const decode = (buf) => {
+    const starts = [];
+    let i = 0;
+    while ((i = buf.indexOf(MAGIC, i)) !== -1) {
+      starts.push(i);
+      i += MAGIC.length;
+    }
+    let text = '';
+    for (let k = 0; k < starts.length; k++) {
+      const end = k + 1 < starts.length ? starts[k + 1] : buf.length;
+      try {
+        text += zlib.zstdDecompressSync(buf.subarray(starts[k], end)).toString('utf8');
+      } catch {
+        /* 尾部半截帧（正在写）忽略 */
+      }
+    }
+    return text;
+  };
+  const records = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.jsonl.zstd')) {
+        for (const line of decode(fs.readFileSync(p)).split('\n')) {
+          if (!line.trim()) continue;
+          try {
+            records.push(JSON.parse(line));
+          } catch {
+            /* 半行忽略 */
+          }
+        }
+      }
+    }
+  };
+  const sessions = path.join(home, 'sessions');
+  if (fs.existsSync(sessions)) walk(sessions);
+  return { skipped: false, records };
 };
 
 const freePort = () =>
@@ -109,13 +165,16 @@ async function checkRender() {
 
   const regs = [];
   const tabTypes = [];
+  const locales = {};
   const ctx = {
     slots: { inject: (n, cb) => { cb(); return () => {}; }, register: (d, C) => { regs.push({ d, C }); return () => {}; } },
     sidebarRightTabs: { register: (d) => { tabTypes.push(d); return () => {}; } },
     sidebarRight: { openTab: () => {}, openTabs: { getSnapshot: () => [] } },
+    locale: { register: (ns, dict) => { locales[ns] = dict; return () => {}; } },
     effect: (f) => { const d = f(); return typeof d === 'function' ? d : () => {}; },
   };
   loaded.exports.apply(ctx);
+  clientInject = loaded.exports.__clientInject ?? [];
 
   const type = tabTypes[0];
   check(
@@ -144,6 +203,49 @@ async function checkRender() {
   const html = regs.map((r) => renderToStaticMarkup(React.createElement(r.C, {}))).join('\n');
   check('组件能渲染成 HTML', html.includes('aitm-panel') && html.includes('aitm-settings-section'), `${html.length} 字节`);
   check('面板离线态给人话（后端没起来时不是白屏）', /正在拉起后端|后端没起来/.test(html));
+
+  /* ---- 对话里的工具卡（tool.call.toolview）---- */
+  const cardTools = loaded.exports.__cardTools ?? [];
+  const cardRegs = regs.filter((r) => r.d.name === 'tool.call.toolview');
+  check(
+    '五个工具都注册了工具卡（keyed，key = 工具名）',
+    cardTools.length === 5 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
+    cardRegs.map((r) => r.d.key).join(', '),
+  );
+  check('工具卡挂在我们自己的文案表上', cardRegs.every((r) => r.d.locale === 'aitm') && Object.keys(locales.aitm?.zh ?? {}).length > 0, `ns=${Object.keys(locales).join(',')}`);
+
+  const Card = loaded.exports.__components.AitmToolCard;
+  // 用「真宿主投影会给出的 meta」当输入（与 index.js 的 presentationMeta 同构）
+  const fakeT = (k, vars) => String(locales.aitm?.zh?.[k] ?? k).replace(/\{(\w+)\}/g, (m, n) => (vars && n in vars ? String(vars[n]) : m));
+  const render = (props) => renderToStaticMarkup(React.createElement(Card, { t: fakeT, toolName: 'aitm_idea_create', ...props }));
+  const resultBlock = (meta, text = '') => ({ kind: 'tool-result', callId: 'c1', call: { name: 'aitm_idea_create', argsRaw: '{"title":"给日历加导出"}' }, content: [{ type: 'text', text }], isError: false, meta });
+
+  const ideaHtml = render({ phase: 'result', block: resultBlock({ kind: 'idea', action: 'create', id: 'idea-7', title: '给日历加导出', status: 'inbox' }) });
+  check('想法卡：标题 + 状态 + 编号 + 打开面板', ideaHtml.includes('给日历加导出') && ideaHtml.includes('inbox') && ideaHtml.includes('idea-7') && ideaHtml.includes('在面板里看'), `${ideaHtml.length} 字节`);
+
+  const changedHtml = render({ toolName: 'aitm_idea_set_status', phase: 'result', block: { ...resultBlock({ kind: 'idea', action: 'status', id: 'idea-7', title: '给日历加导出', status: 'ready' }), call: { name: 'aitm_idea_set_status', argsRaw: '{"id":"idea-7","status":"ready"}' } } });
+  check('状态卡：显示新状态与「状态已改」', changedHtml.includes('ready') && changedHtml.includes('状态已改'));
+
+  const listHtml = render({ toolName: 'aitm_idea_list', phase: 'result', block: resultBlock({ kind: 'idea-list', total: 3, counts: { inbox: 2, ready: 1 }, ideas: [{ id: 'a', title: '甲', status: 'inbox' }, { id: 'b', title: '乙', status: 'ready' }] }) });
+  check('列表卡：总数 + 状态计数 + 条目', listHtml.includes('共 3 条') && listHtml.includes('inbox') && listHtml.includes('甲') && listHtml.includes('乙'));
+
+  const feedHtml = render({ toolName: 'aitm_feed_today', phase: 'result', block: resultBlock({ kind: 'feed', github: 13, bilibili: 60, favorites: 2, top: [{ title: 'OpenCardboard', source: 'github' }] }) });
+  check('合集卡：三个计数 + 条目', feedHtml.includes('13') && feedHtml.includes('60') && feedHtml.includes('OpenCardboard'));
+
+  const healthHtml = render({ toolName: 'aitm_health', phase: 'result', block: resultBlock({ kind: 'health', ok: true, actions: 63, apiRev: 2, version: '0.1.0', dataDir: 'D:\\x\\.aitasks' }) });
+  check('健康卡：正常 + action 数 + apiRev', healthHtml.includes('正常') && healthHtml.includes('63') && healthHtml.includes('apiRev=2'));
+
+  const failureHtml = render({ phase: 'result', block: { ...resultBlock({ kind: 'idea', action: 'create', ok: false, error: '标题不能为空' }, '没写成：标题不能为空'), isError: false } });
+  check('失败态：把原因原样给出', failureHtml.includes('标题不能为空'));
+
+  const runningHtml = render({ phase: 'start', block: { phase: 'start', argsRaw: '{"title":"写一半"}' } });
+  check('运行态：说清这次要干什么', runningHtml.includes('记一条想法') && runningHtml.includes('写一半'));
+
+  const noMetaHtml = render({ phase: 'result', block: resultBlock(undefined, '已记进想法箱：X（idea-1，状态 inbox）') });
+  check('兜底：没有 meta 时收原始文本，不是空白', noMetaHtml.includes('idea-1') && noMetaHtml.includes('原始返回'));
+
+  const brokenHtml = render({ phase: 'result', block: { kind: 'tool-result', callId: 'c1', call: null, content: [], isError: true, error: { name: 'RemoteError', code: 'E_BOOM' } } });
+  check('异常块：不炸（渲染成失败卡）', /E_BOOM|失败|没写成/.test(brokenHtml), brokenHtml.slice(0, 80));
   globalThis.fetch = realFetch;
 }
 
@@ -291,6 +393,37 @@ async function checkDsh() {
     check('③ 客户端分片送达', chunk.status === 200 && text.includes('aitm-panel'), `HTTP ${chunk.status} / ${text.length} 字节`);
   }
 
+  /*
+   * ③' 我们 inject 的每个服务都必须真的有人提供。
+   * 这条是给 R9 白屏上保险：客户端插件 `inject` 里写了一个**永远不会到的服务名**，DSH 不会报错，
+   * 只是把这一条 entry 永久留在 pending → `web boot: N entries did not activate` → 整页失败。
+   * 静态追踪法（不跑浏览器，沙箱里也没有 Chrome）：从**真实 boot 列表**里取包名，
+   * 在它们的 client 分片里找服务提供点 —— `provide("x")` 或 `super(ctx, "x")`（slots 就是后者）。
+   */
+  const injectNames = clientInject;
+  const entryIds = new Set((boot.entries ?? []).map((e) => e.id));
+  const providerOf = (name) => {
+    const patterns = [`provide("${name}"`, `super(ctx, "${name}")`, `super(ctx,"${name}")`];
+    for (const dir of [path.join(ROOT, 'node_modules', '@deepseek-ai'), path.join(REPO, 'node_modules', '@deepseek-ai')]) {
+      if (!fs.existsSync(dir)) continue;
+      for (const pkg of fs.readdirSync(dir)) {
+        const id = `@deepseek-ai/${pkg}`;
+        if (!entryIds.has(id)) continue;
+        const file = path.join(dir, pkg, 'lib', 'client.js');
+        if (!fs.existsSync(file)) continue;
+        const src = fs.readFileSync(file, 'utf8');
+        if (patterns.some((p) => src.includes(p))) return id;
+      }
+    }
+    return null;
+  };
+  const providers = injectNames.map((n) => `${n}←${providerOf(n) ?? '（没人提供！）'}`);
+  check(
+    "③' 客户端 inject 的服务都有提供者（防 R9 式 pending 白屏）",
+    injectNames.length > 0 && providers.every((p) => !p.includes('没人提供')),
+    providers.join(' / '),
+  );
+
   // ④ 端到端：假模型 → aitm_health → 真后端
   const stubPort = await freePort();
   const stubLog = path.join(DSH_HOME, 'stub.jsonl');
@@ -351,6 +484,15 @@ async function checkDsh() {
   //       ③ 没有因为我们拉起的长驻子进程而卡住不退出
   const hasRealData = /63 个 action/.test(toolResult);
   check('④ 端到端：工具拿到真后端数据', code === 0 && hasRealData, `${toolResult.slice(0, 160)}（exit=${code}）`);
+
+  // ④' 卡片的数据通道：工具侧 presentationMeta 必须**原样落到会话日志的 tool/result.meta**（卡片读它）
+  const metaScan = readSessionEvents(DSH_HOME);
+  const healthMeta = metaScan.records.find((r) => r.type === 'tool/result' && r.data?.meta?.kind === 'health')?.data?.meta ?? null;
+  check(
+    "④' presentationMeta 落进 tool/result.meta（卡片的数据来源）",
+    metaScan.skipped || (Boolean(healthMeta) && healthMeta.actions === 63 && healthMeta.apiRev === 2),
+    metaScan.skipped ? '当前 Node 没有内置 zstd 解压 → 本项跳过（⑨ 有同通道断言）' : JSON.stringify(healthMeta),
+  );
 
   // ⑧⑨ 写操作：无审批通道必须**不落地**（fail-closed）；显式放行后必须**真写得进去**
   //     用独立 AI_TASKS_HOME + 临时挪走登记表 → 逼出一个只服务这次运行的后端，然后看磁盘。
@@ -449,6 +591,21 @@ async function checkDsh() {
     '⑨ 显式放行（AITM_APPROVE=allow）→ 写操作真的落盘',
     positive.found.length > 0,
     `磁盘命中 ${String(positive.found.length)} 处（exit=${String(positive.code)}）`,
+  );
+
+  // ⑨' 写工具的 presentationMeta 同样要落进会话日志（客户端就是靠它画想法卡的，而不是解析文本）
+  const ideaRecords = readSessionEvents(DSH_HOME).records.filter((r) => r.type === 'tool/result' && r.data?.meta?.kind === 'idea');
+  const ideaMeta = ideaRecords.find((r) => /放行/.test(String(r.data.meta.title ?? '')))?.data.meta ?? null;
+  check(
+    "⑨' 写操作的 meta（想法卡数据）落进 tool/result.meta",
+    Boolean(ideaMeta) && ideaMeta.action === 'create' && ideaMeta.status === 'inbox' && Boolean(ideaMeta.id),
+    JSON.stringify(ideaMeta),
+  );
+  // ⑧' 反面：被审批拦下的那次调用绝不能带「成功」meta（客户端只会画失败卡）
+  check(
+    "⑧' 被审批拦下的写操作不产生成功 meta",
+    !ideaRecords.some((r) => /不应该/.test(String(r.data.meta.title ?? ''))),
+    `会话日志里 idea meta 共 ${String(ideaRecords.length)} 条`,
   );
 }
 

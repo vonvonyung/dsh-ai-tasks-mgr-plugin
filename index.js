@@ -501,8 +501,19 @@ export function apply(ctx) {
       name: 'aitm_health',
       description: 'AI 任务台后端健康检查：是否可用、action 数量、数据目录、后端地址。排查「面板打不开」时先调它。',
       parameters: {},
+      presentCall: () => ({ card: 'generic', title: 'AI 任务台 · 健康检查', kind: 'read' }),
       output: {
         schema: schemaHealth,
+        // 客户端工具卡读的**结构化摘要**（meta 会原样落到 tool/result 上）
+        presentationMeta: (_a, v) => ({
+          kind: 'health',
+          ok: Boolean(v?.ok),
+          actions: typeof v?.actions === 'number' ? v.actions : null,
+          apiRev: typeof v?.apiRev === 'number' ? v.apiRev : null,
+          version: typeof v?.version === 'string' ? v.version : null,
+          dataDir: typeof v?.dataDir === 'string' ? v.dataDir : null,
+          error: typeof v?.error === 'string' ? v.error : null,
+        }),
         render: (_a, v) => [
           {
             type: 'text',
@@ -553,6 +564,7 @@ export function apply(ctx) {
         q: { type: 'string', description: '标题/正文/标签关键词。' },
         limit: { type: 'number', description: '最多返回几条，默认 20，上限 100。' },
       },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 查想法${a?.status ? `（${String(a.status)}）` : ''}${a?.q ? `「${String(a.q)}」` : ''}`, kind: 'search', rawInput: a?.q ?? a?.status ?? undefined }),
       output: {
         schema: {
           type: 'object',
@@ -576,6 +588,12 @@ export function apply(ctx) {
             },
           },
         },
+        presentationMeta: (_a, v) => ({
+          kind: 'idea-list',
+          total: v?.total ?? 0,
+          counts: v?.counts ?? {},
+          ideas: (v?.ideas ?? []).slice(0, 8).map((i) => ({ id: i.id, title: i.title, status: i.status })),
+        }),
         render: (_a, v) => [
           {
             type: 'text',
@@ -608,6 +626,7 @@ export function apply(ctx) {
       description:
         'AI 任务台新闻合集今日概览：GitHub/B站热榜条数与收藏条数（只读快照，不触发抓取；要抓新数据请让用户在面板点刷新）。',
       parameters: {},
+      presentCall: () => ({ card: 'generic', title: 'AI 任务台 · 今日新闻合集', kind: 'read' }),
       output: {
         schema: {
           type: 'object',
@@ -626,6 +645,13 @@ export function apply(ctx) {
             },
           },
         },
+        presentationMeta: (_a, v) => ({
+          kind: 'feed',
+          github: v?.github ?? 0,
+          bilibili: v?.bilibili ?? 0,
+          favorites: v?.favorites ?? 0,
+          top: (v?.top ?? []).slice(0, 6).map((t) => ({ title: t.title, source: t.source, url: t.url ?? null })),
+        }),
         render: (_a, v) => [
           {
             type: 'text',
@@ -661,6 +687,7 @@ export function apply(ctx) {
         priority: { type: 'string', description: '优先级 p0/p1/p2/p3，默认 p2。' },
         repoId: { type: 'string', description: '关到哪个仓库（省略 = 不关仓库）。' },
       },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 记一条想法：${String(a?.title ?? '(待定)')}`, kind: 'edit' }),
       output: {
         schema: {
           type: 'object',
@@ -673,6 +700,10 @@ export function apply(ctx) {
             error: { type: 'string' },
           },
         },
+        presentationMeta: (_a, v) =>
+          v?.ok
+            ? { kind: 'idea', action: 'create', id: v.id ?? null, title: v.title ?? null, status: v.status ?? null }
+            : { kind: 'idea', action: 'create', ok: false, error: v?.error ?? '未知错误' },
         render: (_a, v) => [{ type: 'text', text: v.ok ? `已记进想法箱：${v.title}（${v.id}，状态 ${v.status}）` : `没写成：${v.error}` }],
       },
       async execute(args) {
@@ -703,6 +734,7 @@ export function apply(ctx) {
         id: { type: 'string', description: '想法 id（可先用 aitm_idea_list 查）。', required: true },
         status: { type: 'string', description: '目标状态：scoping/ready/developing/review/done/archived。', required: true },
       },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 改想法状态：${String(a?.id ?? '?')} → ${String(a?.status ?? '?')}`, kind: 'edit' }),
       output: {
         schema: {
           type: 'object',
@@ -715,6 +747,10 @@ export function apply(ctx) {
             error: { type: 'string' },
           },
         },
+        presentationMeta: (_a, v) =>
+          v?.ok
+            ? { kind: 'idea', action: 'status', id: v.id ?? null, title: v.title ?? null, status: v.status ?? null }
+            : { kind: 'idea', action: 'status', ok: false, error: v?.error ?? '未知错误' },
         render: (_a, v) => [
           { type: 'text', text: v.ok ? `已改：${v.title ?? v.id} → ${v.status}` : `没改成：${v.error}` },
         ],
