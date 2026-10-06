@@ -29,6 +29,27 @@ import { fileURLToPath } from 'node:url';
 
 import { expectedActions } from './expected-actions.mjs';
 
+/**
+ * 退出前把输出刷干净再走。
+ *
+ * Windows 上写管道是**异步**的，`process.exit(N)` 会把还没写完的数据丢掉（Linux 上要写满管道缓冲
+ * 才看得出来 —— 实测 200KB 写进管道后立刻 exit，尾巴直接没了）。这些脚本存在的意义就是
+ * 「把这整段贴回来定位」，尾巴丢了等于白跑，所以统一走这里：
+ * 抛一个内部哨兵 → 顶层吞掉 → 设 `process.exitCode` → **让 Node 自然退出**（输出刷完才退）。
+ * 保留原来的流程语义：抛出去以后，后面的代码不会再跑（和 process.exit 一样）。
+ */
+class ExitScript extends Error {
+  constructor(code) {
+    super(`exit(${code})`);
+    this.code = code;
+  }
+}
+const exitWith = (code) => {
+  throw new ExitScript(code);
+};
+
+async function main() {
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = path.resolve(ROOT, '..');
 const DSH_ENTRY = path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
@@ -347,4 +368,37 @@ try {
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过${failed.length ? ` —— 失败：${failed.map((f) => f.name).join('、')}` : ''}`);
-process.exit(failed.length ? 1 : 0);
+exitWith(failed.length ? 1 : 0);
+
+}
+
+try {
+  await main();
+} catch (err) {
+  if (err instanceof ExitScript) process.exitCode = err.code;
+  else throw err;
+}
+
+/*
+ * 收尾：把输出刷干净，再带着退出码走。
+ *
+ * 为什么不直接 `process.exit(code)`：Windows 上写管道是异步的，进程一退还没写完的数据就丢了
+ * （这个脚本的输出正是要贴回来定位的东西）。这里的空写回调 = 「前面排队的输出都已经落到管道里」。
+ * 为什么不等它自然退出：有的脚本还挂着句柄（后端、子进程），自然退出会一直吊着不结束。
+ */
+const flushThenExit = (code) => {
+  let left = 2;
+  const done = () => {
+    if (--left <= 0) process.exit(code);
+  };
+  const fallback = setTimeout(() => process.exit(code), 2_000);
+  fallback.unref?.();
+  for (const s of [process.stdout, process.stderr]) {
+    try {
+      s.write('', done);
+    } catch {
+      done();
+    }
+  }
+};
+flushThenExit(process.exitCode ?? 0);
