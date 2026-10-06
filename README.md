@@ -10,11 +10,15 @@
 └────────────────────────────────────────────────────────┘
                     │
                     ▼  本机回环（只绑 127.0.0.1）
-     插件进程内的 L3 服务（默认）—— 内核跑在 DSH 自己的进程里
-     `dist-server/l3.mjs`；逃生通道：AITM_URL / AITM_L3=0
+     插件进程内的 L3 服务 —— 内核跑在 DSH 自己的进程里
+     · 开发/自用：内核从**仓库**现编（`<repo>/dist-server/l3.mjs`）
+     · 同事/分发：内核**自带在包里**（`dsh-plugin/dist-server/l3.mjs`，机器上不需要仓库）
+     逃生通道：AITM_URL（连外部实例）/ AITM_L3=0（旧 spawn 桥）
 ```
 
-## 装（三步，开发期不需要 pnpm）
+**两种装法**：自己用 → 看下面「装（三步）」；装给别人（同事）→ 跳到「同事怎么装（分发版）」。
+
+## 装（三步 · 自己开发/自用）
 
 1. 装依赖（只为本地解析 `@deepseek-ai/dsh-tools`；DSH 宿主自带运行时）：
 
@@ -39,6 +43,41 @@
    | `AITM_SPAWN` | `0` = 只连不起（连不上就报错） | `1` |
    | `AITM_L3` | `0` = 退回 M1 的 spawn 桥（保命通道） | `1`（进程内 L3） |
    | `AITM_DEBUG` | `1` = 接住子进程日志（**会让 headless 不退出，只在手工调试时开**） | 空 |
+
+## 同事怎么装（分发版 · 一条命令）
+
+机器上**不需要** AI 任务台仓库：插件包里自带内核（`dist-server/l3.mjs`）与面板产物（`dist/`）。
+
+1. **出包**（在你这边，仓库里跑；产物在 `release/`）：
+
+   ```bash
+   node scripts/vendor-plugin.mjs        # 构建 + 拷内核/面板产物进 dsh-plugin/ + npm pack
+   # → release/dsh-plugin-aitm-0.2.0.tgz（脚本会核对包内容：缺内核/面板产物会直接报错）
+   ```
+
+2. **同事那台机器**：
+
+   ```bash
+   npm i -g pnpm                       # dsh plugin 走 pnpm（DSH Desktop 自带，CLI 要自己装）
+   npx -y @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add <tarball 绝对路径>
+   npx -y @deepseek-ai/dsh@0.2.0-rc.2 web --port 3081
+   ```
+
+   右侧栏就会出现「AI 任务台」，对话里 11 个工具可用。**数据目录**默认 `~/.ai-tasks-mgr`
+   （想换就设 `AI_TASKS_HOME`；开发机那份在仓库 `.aitasks` 里，两边各自独立）。
+
+3. **装机后自检**（有 DSH 问题先跑这个，把输出整段发回来就够定位）：
+
+   ```bash
+   cd <装到的目录或仓库>/dsh-plugin && node scripts/doctor.mjs
+   ```
+
+   `--profile web` 是**给 web app 用**的 profile；DSH Desktop 用的是保留名 `desktop`（同样一条 `add`，
+   把 `--profile web` 换成 `--profile desktop`）。
+
+> 为什么插件里能自带内核：`scripts/vendor-plugin.mjs` 把仓库构建出的 `dist-server/l3.mjs`（只这一个文件，
+> `web.mjs`/`seed.mjs` 是 CLI 入口、插件用不上）与 `dist/` 拷进 `dsh-plugin/`（两边都在 `.gitignore` 里，
+> 不进 git），`npm pack` 按 `files` 白名单打包。装了却没内核会**打包时就报错**，不会拖到同事装机才炸。
 
 ## 十一个工具（模型可调用）
 
@@ -95,6 +134,9 @@
 ## 验证
 
 ```bash
+node scripts/verify-dist.mjs    # 12 项：**分发路径**（打 tarball → 解包 → 手工搭一个「pnpm 装完」的 profile
+                                #        → 在没有仓库的目录起 dsh web：mode=vendor / apiRev=2 / 63 个 action /
+                                #        面板静态产物可取 → 假模型跑工具 → 真命令 dsh plugin add 之后再跑一轮）
 node scripts/verify-dsh.mjs     # 61 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
                                 #        （11 种卡片 + 注册 / 文案 + 失败 / 运行 / 兜底 / 异常块 + 两条日历网格）
                                 #        + 旧后端护栏 + 起前自检
@@ -172,6 +214,25 @@ node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起
    stdout/stderr 追进 `%TEMP%/aitm-dsh-backend.log`，失败时把尾巴贴进错误与面板；
    ④ spawn 的 `'error'` 事件接住，不再空等 90 秒超时；⑤ `node scripts/doctor.mjs` 一条命令
    把上面全打出来。
+
+14. **分发模式：包里自带内核，机器上不需要仓库**（M3 第一半，2026-10-06）：后端来法收进**一个**
+    决策函数（`backendPlan()`）：`AITM_URL` → external；仓库自检过 → l3（仓库内）；没有仓库但包里
+    有 `dist-server/l3.mjs` → **vendor**；`AITM_L3=0` → 旧 spawn 桥；**显式设了 `AITM_REPO` 却没
+    过自检 → 报错**（用户要的就是那个仓库，不能悄悄换成自带内核）。自带内核模式的数据目录走
+    `AI_TASKS_HOME` → `~/.ai-tasks-mgr`（仓库模式仍是 `<repo>/.aitasks`，真机那份数据在那儿）。
+    小坑：`AITM_REPO` 的**空串当没设**（Windows 上 `set AITM_REPO=` 就是空串，否则会变成「仓库是空路径」）。
+15. **作为 profile bundle 安装，补丁里的 `name:` 要用包名**：`dsh plugin add` 之后 DSH 是按
+    `package.json` 的 `dsh.profile.bundles` 加载的，我们那条 row 由 `dsh.bundle.patch` 指到的
+    `aitm.bundle.patch.yml` 插进去 —— 里面写 `name: dsh-plugin-aitm`（包已装在 profile 的
+    node_modules 里，由 Cordis loader 解析）。开发路径的 `aitm.patch.yml` 写**绝对路径**（没装包，
+    只能指文件）。**两个文件别混用**：patch 的 `name:` 缺 `dsh.bundle` 声明时会报
+    `declares no dsh.bundle`，整个 bundle 被跳过（实测踩到，插件根本不激活）。
+16. **别把 `@deepseek-ai/dsh-tools` 当运行期依赖**（2026-10-06 实测）：我们也觉得「import 了就该
+    声明 dependency」，结果 profile 的 node_modules 里多出第二份 —— DSH 自己的 agent-loop 会从
+    profile 解析到**那一份**，于是同一个包两个实例、靠 **Symbol 注册**的服务查不到，工具调用直接失败
+    （`Cannot read properties of undefined (reading 'prepare')`）。宿主本来就提供它，所以：**devDependencies
+    里留着给离线渲染用，运行期一份都不许带**（verify-dist 专门断言 tarball 里没有 `node_modules/`）。
+    peer 声明 `@deepseek-ai/dsh`（DSH 的版本兼容闸门读它：对不上会要 `dsh plugin allow-version`）。
 
 ## 面板里放什么
 
