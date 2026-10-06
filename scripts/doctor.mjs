@@ -33,8 +33,23 @@ try {
   process.exit(1);
 }
 
+/** DSH 自己的版本（从依赖里读；读不到就说不知道） */
+const dshVersion = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('../node_modules/@deepseek-ai/dsh/package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return null;
+  }
+})();
+
 /* ---- ① 插件眼里的配置 ---- */
 const cfg = host.diagnose();
+// 报问题时**整段复制**这一行 + 下面第 ③ 节：版本三元组 / 产物状态 / 后端来法，一眼定位
+console.log(
+  `插件 v${cfg.pluginVersion} · DSH ${dshVersion ?? '(未知)'} · 要求后端 apiRev ≥ ${cfg.apiRevRequired} · ` +
+    `后端来法 ${cfg.backendMode} · 仓库 ${cfg.repoProblem ? '有问题' : '正常'} · 自带内核 ${cfg.vendorL3Present ? '有' : '无'}`,
+);
+console.log('（有 DSH 问题：把这一行连同第 ③ 节整段贴回来就够定位）\n');
 console.log('① 配置（插件会用的值）');
 info(`插件目录   ${cfg.pluginDir}`);
 info(`插件版本   ${cfg.pluginVersion}`);
@@ -56,6 +71,7 @@ info(`要求 apiRev ≥ ${cfg.apiRevRequired}`);
 info(`登记表     ${cfg.registry}${fs.existsSync(cfg.registry) ? '（存在）' : '（无）'}`);
 info(`后端日志   ${cfg.backendLog}${fs.existsSync(cfg.backendLog) ? '（存在）' : '（无）'}`);
 info(`node       ${cfg.node}`);
+info(`DSH        ${dshVersion ?? '(没装在同目录，不影响插件运行)'}`);
 
 /* ---- ② 仓库 / 自带内核 自检 ---- */
 console.log('\n② 仓库自检（分发模式可以没有仓库）');
@@ -117,5 +133,10 @@ ok('版本匹配，插件会用它');
 
 /* ---- 收尾：把自己起的后端收掉，不留孤儿 ---- */
 await host.stop?.();
-console.log('\n（体检结束；若这次是它自己拉起的后端，已经收掉了）');
+console.log('\n—— 报问题就贴这段 ——');
+console.log(
+  `插件 v${cfg.pluginVersion} · DSH ${dshVersion ?? '(未知)'} · 后端 ${base} · apiRev=${String(h.apiRev ?? '(老后端没有)')} · ` +
+    `actions=${String(h.actions)} · 数据目录 ${String(h.dataDir ?? '?')} · 来法 ${cfg.backendMode}`,
+);
+console.log('（体检结束；若这次是它自己拉起的后端，已经收掉了）');
 process.exit(0);
