@@ -208,8 +208,8 @@ async function checkRender() {
   const cardTools = loaded.exports.__cardTools ?? [];
   const cardRegs = regs.filter((r) => r.d.name === 'tool.call.toolview');
   check(
-    '五个工具都注册了工具卡（keyed，key = 工具名）',
-    cardTools.length === 5 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
+    '11 个工具都注册了工具卡（keyed，key = 工具名）',
+    cardTools.length === 11 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
     cardRegs.map((r) => r.d.key).join(', '),
   );
   check('工具卡挂在我们自己的文案表上', cardRegs.every((r) => r.d.locale === 'aitm') && Object.keys(locales.aitm?.zh ?? {}).length > 0, `ns=${Object.keys(locales).join(',')}`);
@@ -235,6 +235,24 @@ async function checkRender() {
   const healthHtml = render({ toolName: 'aitm_health', phase: 'result', block: resultBlock({ kind: 'health', ok: true, actions: 63, apiRev: 2, version: '0.1.0', dataDir: 'D:\\x\\.aitasks' }) });
   check('健康卡：正常 + action 数 + apiRev', healthHtml.includes('正常') && healthHtml.includes('63') && healthHtml.includes('apiRev=2'));
 
+  const detailHtml = render({ toolName: 'aitm_idea_get', phase: 'result', block: resultBlock({ kind: 'idea-detail', id: 'idea-9', title: '给日历加导出', status: 'ready', tags: ['日历'], priority: 'p1', description: '导出成 .ics', tasks: [{ id: 't_1', status: 'succeeded', turns: 2 }] }) });
+  check('详情卡：标题 + 状态 + 标签 + 正文 + 任务', detailHtml.includes('给日历加导出') && detailHtml.includes('日历') && detailHtml.includes('导出成 .ics') && detailHtml.includes('t_1'));
+
+  const taskHtml = render({ toolName: 'aitm_task_status', phase: 'result', block: resultBlock({ kind: 'task', task: { id: 't_9', title: '加 --json 输出', status: 'running', turns: 3, adapterId: 'cli' } }) });
+  check('任务卡：标题 + 状态 + 轮次', taskHtml.includes('加 --json 输出') && taskHtml.includes('running') && taskHtml.includes('3'));
+
+  const taskListHtml = render({ toolName: 'aitm_task_status', phase: 'result', block: resultBlock({ kind: 'task-list', items: [{ id: 't_1', title: '甲任务', status: 'succeeded', turns: 1 }, { id: 't_2', title: '乙任务', status: 'failed', turns: 2 }] }) });
+  check('任务列表卡：两条都在', taskListHtml.includes('甲任务') && taskListHtml.includes('乙任务') && taskListHtml.includes('failed'));
+
+  const calHtml = render({ toolName: 'aitm_calendar_day', phase: 'result', block: resultBlock({ kind: 'calendar', day: '2026-10-06', monthIdeas: 4, monthFavorites: 2, ideas: [{ id: 'a', title: '记一条想法', status: 'inbox' }], favorites: [{ title: '某条新闻', source: 'github' }] }) });
+  check('日历卡：日期 + 月计数 + 想法与收藏', calHtml.includes('2026-10-06') && calHtml.includes('记一条想法') && calHtml.includes('某条新闻'));
+
+  const repoHtml = render({ toolName: 'aitm_repo_status', phase: 'result', block: resultBlock({ kind: 'repos', repos: [{ id: 'r1', name: 'demo-app', worktrees: 3, sizeKb: 2048, active: 1 }], worktrees: 3, totalKb: 2048, reclaimable: 1 }) });
+  check('仓库卡：名字 + worktree 数 + 在跑数', repoHtml.includes('demo-app') && repoHtml.includes('3') && repoHtml.includes('在跑'));
+
+  const backupHtml = render({ toolName: 'aitm_backup_now', phase: 'result', block: resultBlock({ kind: 'backup', mode: 'lean', files: 12, bytes: 4096, label: 'L4 验证' }) });
+  check('备份卡：模式 + 文件数 + 名字', backupHtml.includes('轻量') && backupHtml.includes('12') && backupHtml.includes('L4 验证'));
+
   const failureHtml = render({ phase: 'result', block: { ...resultBlock({ kind: 'idea', action: 'create', ok: false, error: '标题不能为空' }, '没写成：标题不能为空'), isError: false } });
   check('失败态：把原因原样给出', failureHtml.includes('标题不能为空'));
 
@@ -243,6 +261,27 @@ async function checkRender() {
 
   const noMetaHtml = render({ phase: 'result', block: resultBlock(undefined, '已记进想法箱：X（idea-1，状态 inbox）') });
   check('兜底：没有 meta 时收原始文本，不是空白', noMetaHtml.includes('idea-1') && noMetaHtml.includes('原始返回'));
+
+  /* ---- 原生日历（不走 iframe 的那块）---- */
+  const H = loaded.exports.__calendarHelpers;
+  const gridDays = H.monthGridDays(2026, 9, new Date(2026, 9, 6).getTime()); // 2026-10（月份从 0 数）
+  check('日历网格：固定 42 格、周一起排、含今天', gridDays.length === 42 && gridDays.some((d) => d.isToday && d.key === '2026-10-06'), `${gridDays[0].key} → ${gridDays[41].key}`);
+  const ideasByDay = H.groupByDayLocal([{ createdAt: new Date(2026, 9, 6, 10).getTime(), title: '甲' }, { createdAt: new Date(2026, 9, 6, 20).getTime(), title: '乙' }, { createdAt: new Date(2026, 9, 8).getTime(), title: '丙' }], (x) => x.createdAt);
+  const favsByDay = H.groupByDayLocal([{ savedAt: new Date(2026, 9, 6).getTime(), title: '新闻' }], (x) => x.savedAt);
+  const Grid = loaded.exports.__components.CalendarGrid;
+  const calGridHtml = renderToStaticMarkup(React.createElement(Grid, {
+    days: gridDays,
+    ideasByDay,
+    favsByDay,
+    selected: '2026-10-06',
+    onPick: () => {},
+    t: (k) => k,
+  }));
+  check(
+    '原生日历网格：42 个格子 + 当天有想法/收藏的圆点',
+    (calGridHtml.match(/data-day=/g) ?? []).length === 42 && calGridHtml.includes('data-day="2026-10-06"'),
+    `${calGridHtml.length} 字节`,
+  );
 
   const brokenHtml = render({ phase: 'result', block: { kind: 'tool-result', callId: 'c1', call: null, content: [], isError: true, error: { name: 'RemoteError', code: 'E_BOOM' } } });
   check('异常块：不炸（渲染成失败卡）', /E_BOOM|失败|没写成/.test(brokenHtml), brokenHtml.slice(0, 80));
@@ -271,7 +310,8 @@ async function checkWriteGate() {
   host.apply(ctx);
 
   const names = regs.tools.map((t) => t.name ?? t.definition?.name).filter(Boolean);
-  check('两个写工具都注册了', names.includes('aitm_idea_create') && names.includes('aitm_idea_set_status'), names.join(', '));
+  const writeTools = ['aitm_idea_create', 'aitm_idea_set_status', 'aitm_task_start', 'aitm_backup_now'];
+  check('四个写工具都注册了', writeTools.every((n) => names.includes(n)), names.join(', '));
 
   const gate = regs.hooks.find((h) => h.name === 'tools/pre-execute')?.fn;
   if (!check('注册了 tools/pre-execute 闸门', Boolean(gate))) return;
@@ -290,6 +330,19 @@ async function checkWriteGate() {
   check('下游拒绝时以它为准', downstreamCalled && downstreamDeny?.kind === 'deny');
   const aborted = await gate({ name: 'aitm_idea_create', arguments: { title: 'x' }, signal: { aborted: true } }, allow);
   check('已取消的调用 → cancel', aborted?.kind === 'cancel');
+
+  // L4 新增的两个写工具：开工与备份都必须弹审批（它们动的是仓库与磁盘）
+  const startAsk = await gate(
+    { name: 'aitm_task_start', arguments: { ideaId: 'i_x', instruction: '加个 --json' }, signal: { aborted: false } },
+    allow,
+  );
+  check('开工（aitm_task_start）→ ask', startAsk?.kind === 'ask', startAsk?.displayReason?.zh ?? '');
+  const backupAsk = await gate({ name: 'aitm_backup_now', arguments: { mode: 'full' }, signal: { aborted: false } }, allow);
+  check('备份（aitm_backup_now）→ ask', backupAsk?.kind === 'ask', backupAsk?.displayReason?.zh ?? '');
+  const noIdea = await gate({ name: 'aitm_task_start', arguments: { instruction: 'x' }, signal: { aborted: false } }, allow);
+  check('开工缺 ideaId → deny', noIdea?.kind === 'deny');
+  const badMode = await gate({ name: 'aitm_backup_now', arguments: { mode: '全部' }, signal: { aborted: false } }, allow);
+  check('备份 mode 写错 → deny（并说清只能是 lean/full）', badMode?.kind === 'deny' && /lean/.test(String(badMode.reason)));
 }
 
 /* ---------------- ⑤ 旧后端护栏（不用起 DSH：假一个老版本的后端）---------------- */
@@ -379,6 +432,103 @@ function checkNoResidentBackend() {
     lines.length === 0,
     lines.length ? `${lines.slice(0, 2).join(' | ')}（若是你自己开的 npm run dev:web，先收掉再跑本项）` : '',
   );
+}
+
+/**
+ * ⑫ L4 工具（11 个）：拿真 L3 数据把每个工具的 execute() 跑一遍。
+ *
+ * 为什么能不起 DSH 也测：插件默认走**进程内 L3**，所以在 Node 里 import 插件 + 调
+ * ensureBase() 就能拿到真内核；工具本体是纯函数式的（`execute(args)` → 值）。
+ * 校验用 DSH 自己的 `valueSchemaSpecToJsonSchema` + `validateJsonSchemaValue`（与宿主同一套），
+ * 这能抓住「schema 声明与返回值不一致」这类只有真跑才暴露的问题（实测抓到过两次）。
+ */
+async function checkTools() {
+  console.log('⑫ L4 工具（真数据 + 宿主同款输出校验）');
+  const savedHome = process.env.AI_TASKS_HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aitm-tools-'));
+  process.env.AI_TASKS_HOME = home;
+  process.env.AITM_REPO = REPO;
+  let host = null;
+  try {
+    const tools = new Map();
+    const effect = (f) => { const d = f(); return typeof d === 'function' ? d : () => {}; };
+    const fakeCtx = {
+      tools: { register: (t) => { tools.set(t.name, t); } },
+      effect,
+      on: () => () => {},
+      inject: () => {},
+      logger: { info: () => {} },
+    };
+    host = await import(`${pathToFileURL(path.join(ROOT, 'index.js')).href}?tools=${String(Date.now())}`);
+    host.apply(fakeCtx);
+
+    const names = [...tools.keys()].sort();
+    check('11 个工具全部注册', names.length === 11, names.join(', '));
+
+    // 注意：`defineTool` 在注册时已经把 spec 转成 JSON Schema 存在 `tool.output.schema` 上，
+    // 这里必须**直接用**它 —— 再调一次 valueSchemaSpecToJsonSchema 会报
+    // 「schema.required is not supported by the value schema DSL」（实测踩到）。
+    const { validateJsonSchemaValue } = require('@deepseek-ai/dsh-tools');
+    const lossless = (v) => JSON.stringify(JSON.parse(JSON.stringify(v ?? null))) === JSON.stringify(v ?? null);
+
+    // 先在干净数据目录里造两条想法（用真 action，不碰磁盘上的开发数据）
+    await host.ensureBase();
+    const today = new Date();
+    const dayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const a = await tools.get('aitm_idea_create').execute({ title: 'L4 工具验收：把日历导出成 ICS', tags: ['测试'] });
+    await tools.get('aitm_idea_create').execute({ title: 'L4 工具验收：给任务卡片加用时', tags: ['测试'] });
+
+    const cases = [
+      ['aitm_health', {}, (v) => v.ok === true && v.actions === 63 && v.apiRev === 2],
+      ['aitm_idea_list', { q: 'L4 工具验收' }, (v) => v.total === 2],
+      ['aitm_idea_get', { id: a.id }, (v) => v.title === 'L4 工具验收：把日历导出成 ICS' && Array.isArray(v.tasks)],
+      ['aitm_calendar_day', { day: dayKey }, (v) => v.ideas.length === 2 && v.monthIdeas >= 2],
+      ['aitm_calendar_day', { day: '2020-01-01' }, (v) => v.ideas.length === 0],
+      ['aitm_task_status', {}, (v) => Array.isArray(v.items)],
+      ['aitm_repo_status', {}, (v) => Array.isArray(v.repos)],
+      // 写工具本体也能单独跑（审批闸是**另一层**，⑬ 单独验）：这里只证明它写得出东西
+      ['aitm_backup_now', { mode: 'lean', label: 'L4 验证' }, (v) => v.ok === true && v.files >= 1 && v.mode === 'lean'],
+      // 负例：不存在的想法要**优雅报错**（不抛到宿主）
+      ['aitm_idea_get', { id: 'i_不存在' }, (v) => v.ok === false && /不存在/.test(String(v.error))],
+      ['aitm_task_start', { ideaId: 'i_不存在', instruction: 'x' }, (v) => v.ok === false && /不存在/.test(String(v.error))],
+    ];
+    let allOk = true;
+    const detail = [];
+    for (const [name, args, expect] of cases) {
+      const tool = tools.get(name);
+      let bad = null;
+      try {
+        const value = await tool.execute(args);
+        // ① 宿主同款 schema 校验（与 createSuccessResult 里那步一致）
+        const violations = validateJsonSchemaValue(tool.output.schema, JSON.parse(JSON.stringify(value)), 'value');
+        if (violations.length) bad = `schema: ${violations.slice(0, 2).join('; ')}`;
+        // ② presentationMeta 必须是无损 JSON（undefined/函数会炸）
+        else if (tool.output.presentationMeta) {
+          const meta = tool.output.presentationMeta(args, value);
+          if (!lossless(meta)) bad = 'presentationMeta 不是无损 JSON';
+          else if (!meta || typeof meta.kind !== 'string') bad = 'presentationMeta 缺 kind（客户端卡片按它分发）';
+        }
+        // ③ 业务断言
+        if (!bad && !expect(value)) bad = `结果不符预期：${JSON.stringify(value).slice(0, 120)}`;
+      } catch (err) {
+        bad = `抛异常：${String(err?.message ?? err)}`;
+      }
+      if (bad) {
+        allOk = false;
+        detail.push(`${name}: ${bad}`);
+      }
+    }
+    check('每个工具：输出过宿主 schema、meta 无损、业务结果对', allOk, detail.slice(0, 3).join(' | '));
+
+    // 备份确实落了盘（不是只回了个对象）
+    const backups = fs.existsSync(path.join(home, 'backups')) || fs.existsSync(path.join(home, 'data'));
+    check('aitm_backup_now 的产物在数据目录里', backups, home);
+  } finally {
+    await host?.stop?.().catch?.(() => undefined);
+    if (savedHome === undefined) delete process.env.AI_TASKS_HOME;
+    else process.env.AI_TASKS_HOME = savedHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 }
 
 async function checkRepoPreflight() {
@@ -665,6 +815,7 @@ try {
   await checkStaleBackend();
   await checkRepoPreflight();
   await checkBackendModes();
+  await checkTools();
   await checkWriteGate();
   await checkDsh();
   checkNoResidentBackend();

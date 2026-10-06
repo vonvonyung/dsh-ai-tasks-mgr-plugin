@@ -58,10 +58,12 @@ const L3_SOURCE = () => path.join(DEFAULTS.repo, 'src', 'web', 'l3.ts');
 /** 面板 iframe 要的静态目录（vite build 的产物） */
 const RENDERER_DIST = () => path.join(DEFAULTS.repo, 'dist');
 
-/** 写工具（要过审批闸）与它们的人话描述 */
+/** 写工具（要过审批闸）与它们的人话描述 —— 审批卡上必须一眼看出「这次会改什么」 */
 const WRITE_TOOLS = {
   aitm_idea_create: (a) => `在想法箱新建一条：「${String(a?.title ?? '(缺标题)')}」`,
   aitm_idea_set_status: (a) => `把想法 ${String(a?.id ?? '(缺 id)')} 的状态改成 ${String(a?.status ?? '(缺状态)')}`,
+  aitm_task_start: (a) => `开工：${String(a?.ideaId ?? '(缺想法)')} → 起一个 AI 任务（建 worktree、跑 CLI）`,
+  aitm_backup_now: (a) => `立即备份（${a?.mode === 'full' ? '全量' : '轻量'}）`,
 };
 
 /**
@@ -314,6 +316,12 @@ function killGroup(pid, signal = 'SIGTERM') {
     }
   }
 }
+
+/** `YYYY-MM-DD`，按**本机时区**切（与 src/shared/calendar.ts 的 dayKey 同口径） */
+const dayKeyLocal = (ts) => {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 const note = (line) => {
   state.log.push(line);
@@ -627,6 +635,83 @@ const schemaHealth = {
     apiRev: { type: 'integer' },
     apiRevRequired: { type: 'integer' },
     log: { type: 'array', items: { type: 'string' } },
+  },
+};
+
+/** 想法详情（aitm_idea_get） */
+const schemaIdeaDetail = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+    id: { type: 'string' },
+    title: { type: 'string' },
+    status: { type: 'string' },
+    tags: { type: 'array', items: { type: 'string' } },
+    description: { type: 'string' },
+    // 注意：spec / priority / repo 可空，**不要**在这里声明成 string/object ——
+    // DSH 会严格校验（实测报「value.spec must be a string」），可空字段交给 additionalProperties 放行，
+    // 由 execute() 只在有值时带上（见下面的写法）。
+    repo: { type: 'object', additionalProperties: true },
+    tasks: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+};
+
+/** 任务进度 / 开（aitm_task_status、aitm_task_start 共用：一个给 task、一个给 items） */
+const schemaTaskStatus = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+    task: { type: 'object', additionalProperties: true },
+    items: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+};
+
+/** 某天的日历（aitm_calendar_day） */
+const schemaCalendar = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+    day: { type: 'string' },
+    monthIdeas: { type: 'integer' },
+    monthFavorites: { type: 'integer' },
+    ideas: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    favorites: { type: 'array', items: { type: 'object', additionalProperties: true } },
+  },
+};
+
+/** 仓库与工作区占用（aitm_repo_status） */
+const schemaRepos = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+    repos: { type: 'array', items: { type: 'object', additionalProperties: true } },
+    worktrees: { type: 'integer' },
+    totalKb: { type: 'number' },
+    reclaimable: { type: 'integer' },
+  },
+};
+
+/** 备份（aitm_backup_now） */
+const schemaBackup = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+    id: { type: 'string' },
+    mode: { type: 'string' },
+    files: { type: 'integer' },
+    bytes: { type: 'number' },
+    label: { type: 'string' },
+    deduped: { type: 'boolean' },
   },
 };
 
@@ -953,6 +1038,335 @@ export function apply(ctx) {
     }),
   );
 
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_idea_get',
+      description: '看一条想法的详情：正文、状态、标签、规格（spec）与它下面的任务。想深入了解某条想法时用（列表只给标题）。',
+      parameters: {
+        id: { type: 'string', description: '想法 id（可先用 aitm_idea_list 查）。', required: true },
+      },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 看想法 ${String(a?.id ?? '?')}`, kind: 'read' }),
+      output: {
+        schema: schemaIdeaDetail,
+        presentationMeta: (_a, v) =>
+          v?.ok === false
+            ? { kind: 'idea-detail', ok: false, error: v?.error ?? '未知错误' }
+            : {
+                kind: 'idea-detail',
+                id: v.id,
+                title: v.title,
+                status: v.status,
+                tags: v.tags ?? [],
+                priority: v.priority ?? null,
+                description: v.description ?? '',
+                spec: v.spec ? String(v.spec).slice(0, 4000) : null,
+                repo: v.repo?.name ?? null,
+                tasks: (v.tasks ?? []).slice(0, 8).map((t) => ({ id: t.id, status: t.status, turns: t.turns ?? 0 })),
+              },
+        render: (_a, v) =>
+          v.ok === false
+            ? [{ type: 'text', text: `看不了：${v.error}` }]
+            : [
+                { type: 'text', text: `【${v.status}】${v.title}${v.tags?.length ? `（标签：${v.tags.join(' / ')}）` : ''}\n${v.description || '(没有正文)'}${v.spec ? `\n\n规格：\n${v.spec}` : ''}${v.tasks?.length ? `\n\n任务：${v.tasks.map((t) => `${t.id}(${t.status})`).join('、')}` : ''}` },
+              ],
+      },
+      async execute(args) {
+        const id = String(args.id ?? '').trim();
+        if (!id) return { ok: false, error: 'id 必填' };
+        try {
+          const d = await call('idea.get', id);
+          const idea = d?.idea;
+          if (!idea) return { ok: false, error: `想法不存在：${id}` };
+          return {
+            ok: true,
+            id: idea.id,
+            title: idea.title,
+            status: idea.status,
+            tags: idea.tags ?? [],
+            description: idea.description ?? '',
+            // 可空字段：**有值才带**（null 过不了声明成 string/object 的输出校验）
+            ...(idea.priority ? { priority: idea.priority } : {}),
+            ...(idea.spec ? { spec: idea.spec } : {}),
+            ...(d.repo ? { repo: { id: d.repo.id, name: d.repo.name, path: d.repo.path } } : {}),
+            tasks: (d.tasks ?? []).map((t) => ({ id: t.id, status: t.status, turns: t.turns ?? 0, error: t.error ?? null })),
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_task_status',
+      description:
+        '看任务进度：给 taskId 看单个（状态/轮次/用量/改动摘要/报错），不给就列出任务（可按 ideaId 或 status 过滤）。',
+      parameters: {
+        taskId: { type: 'string', description: '任务 id（省略则列任务）。' },
+        ideaId: { type: 'string', description: '只看某条想法的任务。' },
+        status: { type: 'string', description: '按任务状态过滤（queued/running/awaiting-review/failed/cancelled/done…）。' },
+      },
+      presentCall: () => ({ card: 'generic', title: 'AI 任务台 · 看任务进度', kind: 'read' }),
+      output: {
+        schema: schemaTaskStatus,
+        presentationMeta: (_a, v) =>
+          v?.ok === false
+            ? { kind: 'task', ok: false, error: v?.error ?? '未知错误' }
+            : v.items
+              ? { kind: 'task-list', items: v.items.slice(0, 10) }
+              : { kind: 'task', task: v.task },
+        render: (_a, v) => {
+          if (v.ok === false) return [{ type: 'text', text: `查不到：${v.error}` }];
+          if (!v.items) {
+            const t = v.task ?? {};
+            return [{ type: 'text', text: `${t.title ?? t.id}｜状态 ${t.status}｜第 ${t.turns ?? 0} 轮${t.diffStat ? `｜改动 ${t.diffStat.files ?? '?'} 个文件` : ''}${t.error ? `｜错误：${t.error}` : ''}` }];
+          }
+          return [{ type: 'text', text: v.items.length ? v.items.map((t) => `- [${t.status}] ${t.title ?? t.id}${t.ideaTitle ? `（想法：${t.ideaTitle}）` : ''}`).join('\n') : '（没有任务）' }];
+        },
+      },
+      async execute(args) {
+        try {
+          const taskId = String(args.taskId ?? '').trim();
+          if (taskId) {
+            const d = await call('task.get', taskId);
+            if (!d?.task) return { ok: false, error: `任务不存在：${taskId}` };
+            const t = d.task;
+            return {
+              ok: true,
+              task: {
+                id: t.id,
+                ideaId: t.ideaId,
+                ideaTitle: d.idea?.title ?? null,
+                title: t.title,
+                status: t.status,
+                turns: t.turns ?? 0,
+                adapterId: t.adapterId ?? null,
+                diffStat: t.diffStat ?? null,
+                commits: (t.commits ?? []).length,
+                usage: t.usage ?? null,
+                error: t.error ?? null,
+              },
+            };
+          }
+          const list = await call('task.list', {
+            ...(args.ideaId ? { ideaId: String(args.ideaId) } : {}),
+            ...(args.status ? { status: String(args.status) } : {}),
+          });
+          const tasks = Array.isArray(list) ? list : [];
+          return {
+            ok: true,
+            items: tasks.slice(-20).map((t) => ({
+              id: t.id,
+              title: t.title,
+              status: t.status,
+              turns: t.turns ?? 0,
+              ideaId: t.ideaId,
+            })),
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_calendar_day',
+      description:
+        '看某一天记了什么想法、存了什么新闻（默认今天）。给 day（YYYY-MM-DD）可指定日期；顺带给当月的计数。',
+      parameters: {
+        day: { type: 'string', description: 'YYYY-MM-DD（省略 = 今天）。' },
+      },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · ${String(a?.day ?? '今天')} 的日历`, kind: 'read' }),
+      output: {
+        schema: schemaCalendar,
+        // meta 必须是无 undefined 的纯 JSON（DSH 会做 lossless 校验，undefined 直接报
+        // 「output.presentationMeta returned non-lossless JSON」）——所以逐字段显式构造
+        presentationMeta: (_a, v) =>
+          v?.ok === false
+            ? { kind: 'calendar', ok: false, error: v?.error ?? '未知错误' }
+            : {
+                kind: 'calendar',
+                day: v.day,
+                monthIdeas: v.monthIdeas ?? 0,
+                monthFavorites: v.monthFavorites ?? 0,
+                ideas: (v.ideas ?? []).slice(0, 10),
+                favorites: (v.favorites ?? []).slice(0, 10),
+              },
+        render: (_a, v) =>
+          v.ok === false
+            ? [{ type: 'text', text: `看不了：${v.error}` }]
+            : [
+                {
+                  type: 'text',
+                  text:
+                    `${v.day}：想法 ${v.ideas.length} 条、收藏 ${v.favorites.length} 条（本月共 ${v.monthIdeas} 条想法、${v.monthFavorites} 条收藏）\n` +
+                    [...v.ideas.map((i) => `- [${i.status}] ${i.title}`), ...v.favorites.map((f) => `- （收藏/${f.source}）${f.title}`)].join('\n'),
+                },
+              ],
+      },
+      async execute(args) {
+        try {
+          const day = String(args.day ?? '').trim() || dayKeyLocal(Date.now());
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return { ok: false, error: `day 格式应为 YYYY-MM-DD，收到「${day}」` };
+          const prefix = day.slice(0, 7);
+          const ideas = (await call('idea.list', {})) ?? [];
+          let favorites = [];
+          try {
+            const snap = await call('feed.get', {});
+            favorites = Array.isArray(snap?.favorites) ? snap.favorites : [];
+          } catch {
+            /* 没抓过新闻就没有收藏这一半，不该让日历整个失败 */
+          }
+          const pick = (list, ts) => list.filter((x) => dayKeyLocal(ts(x)) === day);
+          return {
+            ok: true,
+            day,
+            monthIdeas: ideas.filter((i) => dayKeyLocal(i.createdAt ?? 0).startsWith(prefix)).length,
+            monthFavorites: favorites.filter((f) => dayKeyLocal(f.savedAt ?? 0).startsWith(prefix)).length,
+            ideas: pick(ideas, (i) => i.createdAt ?? 0).map((i) => ({ id: i.id, title: i.title, status: i.status })),
+            favorites: pick(favorites, (f) => f.savedAt ?? 0).map((f) => ({ title: f.title, source: f.source ?? null, url: f.url ?? null })),
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_task_start',
+      description:
+        '把一条想法**开工**（写操作，需要用户审批）：在它的仓库里建 worktree、起 AI 引擎跑这轮指令。指令要具体、可验收。',
+      parameters: {
+        ideaId: { type: 'string', description: '想法 id（可先用 aitm_idea_list / aitm_idea_get 查）。', required: true },
+        instruction: { type: 'string', description: '这轮要让 AI 干什么（越具体越好；会原样作为任务指令）。', required: true },
+      },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 开工：${String(a?.ideaId ?? '?')}`, kind: 'execute' }),
+      output: {
+        schema: schemaTaskStatus,
+        presentationMeta: (_a, v) =>
+          v?.ok === false ? { kind: 'task', ok: false, error: v?.error ?? '未知错误' } : { kind: 'task', task: v.task },
+        render: (_a, v) => [{ type: 'text', text: v.ok === false ? `没能开工：${v.error}` : `已开工：${v.task?.title ?? v.task?.id}（状态 ${v.task?.status}，引擎 ${v.task?.adapterId}）` }],
+      },
+      async execute(args) {
+        const ideaId = String(args.ideaId ?? '').trim();
+        const instruction = String(args.instruction ?? '').trim();
+        if (!ideaId) return { ok: false, error: 'ideaId 必填' };
+        if (!instruction) return { ok: false, error: 'instruction 必填（这轮要让 AI 干什么）' };
+        try {
+          const t = await call('task.start', { ideaId, instruction });
+          return {
+            ok: true,
+            task: { id: t.id, title: t.title, status: t.status, ideaId: t.ideaId, adapterId: t.adapterId ?? null, turns: t.turns ?? 0 },
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_repo_status',
+      description: '仓库与工作区占用：有哪些仓库、各自多少个 task worktree、占多少空间、有多少可回收（只读，不删东西）。',
+      parameters: {},
+      presentCall: () => ({ card: 'generic', title: 'AI 任务台 · 仓库与工作区占用', kind: 'read' }),
+      output: {
+        schema: schemaRepos,
+        presentationMeta: (_a, v) => (v?.ok === false ? { kind: 'repos', ok: false, error: v?.error } : { kind: 'repos', repos: (v.repos ?? []).slice(0, 8), totalKb: v.totalKb, reclaimable: v.reclaimable }),
+        render: (_a, v) =>
+          v.ok === false
+            ? [{ type: 'text', text: `看不了：${v.error}` }]
+            : [
+                {
+                  type: 'text',
+                  text:
+                    `共 ${v.repos.length} 个仓库，worktree ${v.worktrees} 个 · ${Math.round((v.totalKb ?? 0) / 1024)} MB${v.reclaimable ? ` · 可回收 ${v.reclaimable}` : ''}\n` +
+                    v.repos.map((r) => `- ${r.name}（${r.path}）：${r.worktrees} 个 · ${Math.round(r.sizeKb / 1024)} MB${r.active ? ` · ${r.active} 个在跑` : ''}`).join('\n'),
+                },
+              ],
+      },
+      async execute() {
+        try {
+          const repos = (await call('repo.list', {})) ?? [];
+          const gc = await call('workspace.gc', { apply: false });
+          const items = Array.isArray(gc?.items) ? gc.items : [];
+          const byRepo = repos.map((r) => {
+            const mine = items.filter((i) => i.repoId === r.id);
+            return {
+              id: r.id,
+              name: r.name,
+              path: r.path,
+              worktrees: mine.length,
+              sizeKb: mine.reduce((sum, i) => sum + (i.sizeKb ?? 0), 0),
+              active: mine.filter((i) => i.active).length,
+              orphan: mine.filter((i) => i.orphan).length,
+            };
+          });
+          return {
+            ok: true,
+            repos: byRepo,
+            worktrees: items.length,
+            totalKb: items.reduce((sum, i) => sum + (i.sizeKb ?? 0), 0),
+            reclaimable: items.filter((i) => !i.active).length,
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_backup_now',
+      description:
+        '立即做一次备份（写操作，需要用户审批）。默认轻量（只备数据文件）；mode=full 走全量（含附件等大文件）。',
+      parameters: {
+        mode: { type: 'string', description: 'lean（默认，轻量）或 full（全量）。' },
+        label: { type: 'string', description: '给这次备份起个名字（可省）。' },
+      },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 立即备份（${a?.mode === 'full' ? '全量' : '轻量'}）`, kind: 'edit' }),
+      output: {
+        schema: schemaBackup,
+        presentationMeta: (_a, v) =>
+          v?.ok === false
+            ? { kind: 'backup', ok: false, error: v?.error ?? '未知错误' }
+            : { kind: 'backup', id: v.id, mode: v.mode, files: v.files, bytes: v.bytes, label: v.label ?? null, deduped: Boolean(v.deduped) },
+        render: (_a, v) =>
+          v.ok === false
+            ? [{ type: 'text', text: `没备成：${v.error}` }]
+            : [{ type: 'text', text: `已备份（${v.mode === 'full' ? '全量' : '轻量'}）：${v.files} 个文件 · ${Math.round((v.bytes ?? 0) / 1024)} KB${v.deduped ? '（和上一份一样，没重复落）' : ''}` }],
+      },
+      async execute(args) {
+        try {
+          const mode = String(args.mode ?? 'lean').trim() === 'full' ? 'full' : 'lean';
+          const entry = await call('backup.create', {
+            mode,
+            reason: 'manual',
+            ...(args.label ? { label: String(args.label) } : {}),
+          });
+          return {
+            ok: true,
+            id: entry?.id ?? null,
+            mode: entry?.mode ?? mode,
+            files: entry?.files ?? 0,
+            bytes: entry?.bytes ?? 0,
+            label: entry?.label ?? null,
+            deduped: Boolean(entry?.deduped),
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
   /* -------- ④ 审批闸：写操作一律先过 `tools/pre-execute` -------- */
   ctx.effect(
     () =>
@@ -967,6 +1381,12 @@ export function apply(ctx) {
         }
         if (exec.name === 'aitm_idea_set_status' && (!String(a.id ?? '').trim() || !String(a.status ?? '').trim())) {
           return { kind: 'deny', reason: 'aitm: aitm_idea_set_status 缺 id 或 status' };
+        }
+        if (exec.name === 'aitm_task_start' && (!String(a.ideaId ?? '').trim() || !String(a.instruction ?? '').trim())) {
+          return { kind: 'deny', reason: 'aitm: aitm_task_start 缺 ideaId 或 instruction' };
+        }
+        if (exec.name === 'aitm_backup_now' && a.mode !== undefined && !['lean', 'full'].includes(String(a.mode))) {
+          return { kind: 'deny', reason: `aitm: aitm_backup_now 的 mode 只能是 lean 或 full（收到「${String(a.mode)}」）` };
         }
         // 先让下游（沙箱 / 权限档 / 别的插件）表态：它要是拒了就以它为准
         const downstream = await next();
