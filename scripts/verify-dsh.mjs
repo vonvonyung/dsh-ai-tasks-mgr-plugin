@@ -331,6 +331,56 @@ async function checkStaleBackend() {
 }
 
 /* ---------------- ⑥ 起前自检（仓库路径不对 = 「不能拉起后端」最常见的原因） ---------------- */
+/**
+ * ⑩ 后端来法：默认**进程内 L3**、两条逃生通道（AITM_URL / AITM_L3=0）。
+ * 纯离线断言（只 import 插件模块看 diagnose()，不起 DSH、不起后端）。
+ * DEFAULTS 在模块加载时读 env ⇒ 每个 case 换 query 参数绕模块缓存，跑完还原 env。
+ */
+async function checkBackendModes() {
+  console.log('⑩ 后端来法（进程内 L3 / 逃生通道）');
+  const saved = { url: process.env.AITM_URL, l3: process.env.AITM_L3 };
+  const load = async (tag) => {
+    const mod = await import(`${pathToFileURL(path.join(ROOT, 'index.js')).href}?mode=${tag}-${String(Date.now())}`);
+    return mod.diagnose();
+  };
+  try {
+    delete process.env.AITM_URL;
+    delete process.env.AITM_L3;
+    const byDefault = await load('default');
+    check('默认：进程内 L3（不 spawn 常驻后端）', byDefault.backendMode === 'l3' && String(byDefault.l3Bundle).endsWith('l3.mjs'), `backendMode=${byDefault.backendMode}`);
+
+    process.env.AITM_L3 = '0';
+    const legacy = await load('legacy');
+    check('逃生通道：AITM_L3=0 → 退回旧的 spawn 桥', legacy.backendMode === 'spawn');
+
+    delete process.env.AITM_L3;
+    process.env.AITM_URL = 'http://127.0.0.1:9';
+    const external = await load('external');
+    check('逃生通道：AITM_URL → 连外部实例（保留旧后端护栏）', external.backendMode === 'external');
+  } finally {
+    if (saved.url === undefined) delete process.env.AITM_URL;
+    else process.env.AITM_URL = saved.url;
+    if (saved.l3 === undefined) delete process.env.AITM_L3;
+    else process.env.AITM_L3 = saved.l3;
+  }
+}
+
+/** ⑪ 不留常驻后端进程：进程表里不该再有 scripts/dev-web.mjs（L3 之后这条是「结构上不可能」的回归哨） */
+function checkNoResidentBackend() {
+  console.log('⑪ 不留常驻后端进程');
+  if (process.platform === 'win32') {
+    check('Windows 上跳过进程表检查（真机手工看任务管理器）', true, 'skip');
+    return;
+  }
+  const r = spawnSync('ps', ['-A', '-o', 'command'], { encoding: 'utf8' });
+  const lines = (r.stdout ?? '').split('\n').filter((l) => /scripts\/dev-web\.mjs/.test(l));
+  check(
+    '进程表里没有遗留的 dev-web.mjs 常驻后端',
+    lines.length === 0,
+    lines.length ? `${lines.slice(0, 2).join(' | ')}（若是你自己开的 npm run dev:web，先收掉再跑本项）` : '',
+  );
+}
+
 async function checkRepoPreflight() {
   console.log('⑥ 起前自检（仓库路径 / 依赖）');
   const bogus = path.join(os.tmpdir(), `aitm-not-a-repo-${String(Date.now())}`);
@@ -614,8 +664,10 @@ try {
   await checkRender();
   await checkStaleBackend();
   await checkRepoPreflight();
+  await checkBackendModes();
   await checkWriteGate();
   await checkDsh();
+  checkNoResidentBackend();
 } catch (err) {
   check('验证过程未抛异常', false, String(err?.message ?? err));
 } finally {

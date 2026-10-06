@@ -7,14 +7,15 @@
  *      写操作一律过 `tools/pre-execute` 审批闸：用户点了「同意」才落地）
  *   ③ 给浏览器半边递地址：注册 /aitm-plugin/config 路由（客户端拿不到 Node 环境变量）
  *
- * M2 会把「桥」换成插件进程内的 L3 服务（core 直接 import），工具与路由的接口不变。
+ * M2 第三步：桥换成了**进程内 L3 服务**（默认）——不再 spawn 常驻后端进程，也不再有
+ * 「复用旧实例」这一整类问题（R10）。逃生通道：`AITM_URL`（连外部后端）/ `AITM_L3=0`（退回旧 spawn 桥）。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
@@ -44,7 +45,18 @@ const DEFAULTS = {
    * 只读工具不受影响。
    */
   approve: (process.env.AITM_APPROVE ?? 'ask').toLowerCase(),
+  /**
+   * 默认走**进程内 L3**（core 直接 import，不起常驻子进程）。
+   * `AITM_L3=0` 退回旧的 spawn 桥（保留一个版本，方便对照/回滚）。
+   */
+  l3: process.env.AITM_L3 !== '0',
 };
+
+/** L3 产物（npm run build 出的小包；插件 import 它拿到 createL3） */
+const L3_BUNDLE = () => path.join(DEFAULTS.repo, 'dist-server', 'l3.mjs');
+const L3_SOURCE = () => path.join(DEFAULTS.repo, 'src', 'web', 'l3.ts');
+/** 面板 iframe 要的静态目录（vite build 的产物） */
+const RENDERER_DIST = () => path.join(DEFAULTS.repo, 'dist');
 
 /** 写工具（要过审批闸）与它们的人话描述 */
 const WRITE_TOOLS = {
@@ -74,6 +86,10 @@ const state = {
   identity: null,
   /** spawn 本身失败的描述（cwd 不存在之类）—— 有它就别再空等 health 超时 */
   spawnError: null,
+  /** 后端的来法：'l3'（进程内）/ 'external'（AITM_URL）/ 'spawn'（旧桥） */
+  mode: null,
+  /** 进程内 L3 句柄（有它就是直连内核，call() 不走 HTTP） */
+  l3: null,
   log: [],
   exitHook: false,
 };
@@ -138,6 +154,105 @@ function repoError(detail) {
       `② 或把 `+'`dsh-plugin/aitm.patch.yml` 的 `name:` 指到**那个仓库**里的 `dsh-plugin/index.js`（插件默认就按自己的位置推导仓库）；' +
       `③ 确认那个仓库已 git pull 且 npm install 过。当前推导出的仓库：${DEFAULTS.repo}`,
   );
+}
+
+/**
+ * 进程内 L3 的产物准备。
+ *
+ * 为什么要有这一步：L3 是 TS 源码（`src/web/l3.ts`），要 import 就得先有 esbuild 产物。
+ * 不把产物提交进仓库（生成物不进 git 的老规矩），所以这里用**仓库自己的 esbuild** 现编：
+ *   - 产物比源码旧（或没有）→ 编一次（几百毫秒）
+ *   - 仓库/node_modules 里没有 esbuild → 给人话，让他跑 `npm run build`
+ *
+ * 面板 iframe 还需要渲染层 `dist/`：没有或比 src 旧就用 `npx vite build` 补一次（一次性进程，
+ * 不是常驻后端）。
+ */
+function newestMtime(dir, exts) {
+  let newest = 0;
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules' || e.name.startsWith('.')) continue;
+        walk(p);
+      } else if (exts.some((x) => e.name.endsWith(x))) {
+        try {
+          newest = Math.max(newest, fs.statSync(p).mtimeMs);
+        } catch {
+          /* 刚被删掉的文件 */
+        }
+      }
+    }
+  };
+  walk(dir);
+  return newest;
+}
+
+const exists = (p) => {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/** 编 dist-server/l3.mjs（源码新了才编）；返回错误描述或 null */
+async function ensureL3Bundle(repo) {
+  const out = L3_BUNDLE();
+  const srcDir = path.join(repo, 'src');
+  const srcNewest = newestMtime(srcDir, ['.ts', '.tsx']);
+  const outMtime = exists(out) ? fs.statSync(out).mtimeMs : 0;
+  if (outMtime && outMtime >= srcNewest) return null;
+
+  let esbuild;
+  try {
+    const { createRequire } = await import('node:module');
+    esbuild = createRequire(path.join(repo, 'package.json'))('esbuild');
+  } catch {
+    return `要现编 ${path.relative(repo, out)}，但 ${repo} 里没有可用的 esbuild（依赖没装？）`;
+  }
+  try {
+    await esbuild.build({
+      bundle: true,
+      platform: 'node',
+      target: 'node20',
+      format: 'esm',
+      absWorkingDir: repo,
+      entryPoints: [L3_SOURCE()],
+      outfile: out,
+      logLevel: 'silent',
+      define: { __AITM_BUILD_AT__: JSON.stringify(new Date().toISOString()) },
+    });
+    note(`[host] 现编了进程内 L3：${path.relative(repo, out)}`);
+    return null;
+  } catch (err) {
+    return `编 ${path.relative(repo, out)} 失败：${String(err?.message ?? err)}`;
+  }
+}
+
+/** 面板 iframe 的静态产物；没有或旧了就 vite build 一次（一次性，不留常驻进程） */
+function ensureRendererDist(repo) {
+  const index = path.join(RENDERER_DIST(), 'index.html');
+  const srcNewest = newestMtime(path.join(repo, 'src', 'renderer'), ['.ts', '.tsx', '.css', '.html']);
+  const indexMtime = exists(index) ? fs.statSync(index).mtimeMs : 0;
+  if (indexMtime && indexMtime >= srcNewest) return null;
+  note(`[host] 面板产物${indexMtime ? '过期' : '不存在'}，跑一次 vite build（一次性，不常驻）`);
+  const r = spawnSync('npx', ['vite', 'build'], {
+    cwd: repo,
+    stdio: 'ignore',
+    env: process.env,
+    shell: process.platform === 'win32', // Windows 上 npx 是 .cmd 垫片，不 shell 会 EINVAL
+  });
+  if (r.status !== 0 || !exists(index)) {
+    return `渲染层没构建出来（在 ${repo} 手动跑一次 npm run build 看报错）`;
+  }
+  return null;
 }
 
 function readRegistry() {
@@ -286,9 +401,18 @@ async function waitHealth(base, ms, opts = {}) {
   }
 }
 
-/** 调一个 action：我们的 web 宿主就是 POST /api/<action> 的清一色契约 */
+/** 调一个 action：进程内 L3 直连内核；外部后端（AITM_URL）/旧桥走 POST /api/<action> */
 async function call(action, payload = {}) {
+  if (DEFAULTS.l3 && !DEFAULTS.url) {
+    const base = await ensureBase();
+    if (state.l3) return state.l3.invoke(action, payload);
+    return httpCall(base, action, payload);
+  }
   const base = await ensureBase();
+  return httpCall(base, action, payload);
+}
+
+async function httpCall(base, action, payload = {}) {
   const res = await fetch(`${base}/api/${action}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -314,6 +438,48 @@ export async function ensureBase() {
   if (state.starting) return state.starting;
 
   state.starting = (async () => {
+    // ── 默认：进程内 L3（M2 第三步）──
+    // 不起常驻子进程、不走 HTTP（call() 直连内核）；只留一个回环端口给面板 iframe。
+    // 没有「复用旧实例」这一步 ⇒ R10 那类「连上 51 个 action 的旧后端」从根上不存在了。
+    if (DEFAULTS.l3) {
+      const problem = preflightRepo(DEFAULTS.repo);
+      if (problem) throw repoError(problem);
+      const bundleProblem = await ensureL3Bundle(DEFAULTS.repo);
+      if (bundleProblem) throw new Error(`${bundleProblem}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build（或 npm install 补依赖）`);
+      const distProblem = ensureRendererDist(DEFAULTS.repo);
+      if (distProblem) throw new Error(`${distProblem}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build`);
+
+      let mod;
+      try {
+        mod = await import(pathToFileURL(L3_BUNDLE()).href);
+      } catch (err) {
+        throw new Error(`进程内 L3 加载失败（${L3_BUNDLE()}）：${String(err?.message ?? err)}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build`);
+      }
+      if (typeof mod?.createL3 !== 'function') {
+        throw new Error(`进程内 L3 产物不完整（${L3_BUNDLE()} 里没有 createL3）。处理：删掉它，再到 ${DEFAULTS.repo} 跑一次 npm run build`);
+      }
+
+      const l3 = await mod.createL3({
+        // 数据目录与 dev-web 同口径：AI_TASKS_HOME 优先，否则仓库里的 .aitasks
+        //（Windows 真机上那份数据就在仓库内，用户不用多设任何变量）
+        home: process.env.AI_TASKS_HOME ?? path.join(DEFAULTS.repo, '.aitasks'),
+        port: 0,
+        host: '127.0.0.1',
+        staticDir: RENDERER_DIST(),
+        version: '0.1.0',
+      });
+      const h = await l3.health();
+      if (!compatible(h)) throw incompatibleError(l3.base, h, '进程内 L3');
+      state.l3 = l3;
+      state.mode = 'l3';
+      state.base = l3.base;
+      state.identity = backendId(h);
+      note(`[host] 进程内 L3 就绪：${l3.base}（数据目录 ${l3.home}，共 ${h.actions} 个 action）`);
+      logLine(`[host] in-process L3 ready at ${l3.base} (home=${l3.home}, actions=${h.actions})`);
+      return state.base;
+    }
+
+    // ── 逃生通道：旧的 spawn 桥（AITM_L3=0）──
     // 先看登记表：上一次会话起的后端还活着就复用（不叠着起第二个）
     const known = readRegistry();
     if (known?.pid && known?.base && pidAlive(known.pid)) {
@@ -409,13 +575,29 @@ export function diagnose() {
     spawn: DEFAULTS.spawn,
     apiRevRequired: REQUIRED_API_REV,
     approve: DEFAULTS.approve,
+    /** 后端来法：l3（进程内，默认）/ external（AITM_URL）/ spawn（AITM_L3=0 的旧桥） */
+    backendMode: DEFAULTS.url ? 'external' : DEFAULTS.l3 ? 'l3' : 'spawn',
+    l3Bundle: L3_BUNDLE(),
+    l3BundlePresent: exists(L3_BUNDLE()),
+    rendererDistPresent: exists(path.join(RENDERER_DIST(), 'index.html')),
+    runningMode: state.mode,
     registry: PIDFILE,
     backendLog: BACKEND_LOG,
     node: process.version,
   };
 }
 
-function stop() {
+async function stop() {
+  if (state.l3) {
+    try {
+      await state.l3.stop();
+      note('[host] 已收掉进程内 L3（端口与内核）');
+    } catch (err) {
+      note(`[host] 收 L3 时报错（忽略）：${String(err?.message ?? err)}`);
+    }
+    state.l3 = null;
+    state.mode = null;
+  }
   if (state.child?.pid && !state.adopted) {
     const pid = state.child.pid;
     killGroup(pid, 'SIGTERM');
@@ -430,6 +612,7 @@ function stop() {
   state.adopted = false;
   state.base = null;
   state.starting = null;
+  state.identity = null;
 }
 
 const schemaHealth = {
@@ -470,6 +653,7 @@ export function apply(ctx) {
             const body = JSON.stringify({
               base,
               error,
+              mode: state.mode,
               repo: DEFAULTS.repo,
               repoProblem: preflightRepo(DEFAULTS.repo),
               apiRevRequired: REQUIRED_API_REV,
@@ -526,7 +710,7 @@ export function apply(ctx) {
       async execute() {
         try {
           const base = await ensureBase();
-          const h = await health(base, 3000);
+          const h = state.l3 ? await state.l3.health() : await health(base, 3000);
           if (!h?.ok) return { ok: false, error: 'GET /api/health 不通', base, log: state.log.slice(-10) };
           // 数据目录：新后端在 health 里给；老后端没有，才回落到 settings.get
           let dataDir = h.dataDir;
@@ -802,7 +986,7 @@ export function apply(ctx) {
   );
 
   // DSH 卸载插件时收掉我们拉起的后端
-  ctx.effect(() => () => stop());
+  ctx.effect(() => () => void stop());
   // headless 跑完就退进程：exit 钩子里收一次，免得留下孤儿后端
   if (!state.exitHook) {
     state.exitHook = true;

@@ -81,11 +81,12 @@
 ## 验证
 
 ```bash
-node scripts/verify-dsh.mjs     # 38 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡 10 项（五种卡片 / 失败 / 运行 / 兜底 / 异常块）
+node scripts/verify-dsh.mjs     # 42 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡 10 项（五种卡片 / 失败 / 运行 / 兜底 / 异常块）
                                 #        + 旧后端护栏 + 起前自检
                                 #        + 审批闸（写→ask / 只读→放行 / 缺参→deny / 下游优先 / 取消）
                                 #        + 激活 + boot 图 + 分片送达 + inject 服务都有提供者（防 R9 式 pending 白屏） + 端到端真数据
                                 #        + meta 落盘（health / 写想法） + 写操作 fail-closed + 放行后落盘
+                                #        + 后端来法（默认进程内 L3 / AITM_URL / AITM_L3=0）+ 不留常驻后端进程
 node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起后端、缺什么、后端日志尾巴
 ```
 
@@ -123,7 +124,17 @@ node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起
    两个 keyed 槽的 `key` ＝ 类型的 **`id`**（不是 `kind`）；开面板用 `ctx.sidebarRight.openTab('<kind>')`
    （`openTab` 属于「当前会话」，没有会话时不要调；用户也能从右侧栏的引导页点进来）。
 
-11. **后端会被「复用」，所以必须核身份**：插件默认按 `%TEMP%/aitm-dsh-backend.json` 复用上一次
+11. **后端默认进程内（L3），不是子进程**（M2 第三步）：M1 的桥 spawn 一个
+    `scripts/dev-web.mjs --prod` 子进程、靠 `%TEMP%/aitm-dsh-backend.json` 登记表复用它 —— 这条
+    路踩过「复用了旧实例（51 action、`news.*` 接口）」和「路径写死起不来、错误被吞」两次真机问题，
+    还要求每次会话多养一个常驻进程。现在改成：插件**在 DSH 进程内** `import` 仓库的
+    `dist-server/l3.mjs`（`npm run build` 产出；源码更新了插件会用仓库自己的 esbuild 现编一次），
+    建 `AppApi` + 一个只绑回环的 HTTP 端口（给面板 iframe），工具调用直连 `l3.invoke()`。
+    没有登记表 ⇒ 「复用旧实例」这整类问题从根上消失；DSH 一退，进程内的一切随之结束。
+    两条逃生通道都保留：`AITM_URL`（外部实例，仍过 apiRev 护栏）、`AITM_L3=0`（旧的 spawn 桥）。
+    面板产物（`dist/index.html`）缺了或旧了，插件会用 `npx vite build` 一次性补（不是常驻进程）。
+
+12. **（旧桥通道：`AITM_L3=0` 或外部实例）后端会被「复用」，所以必须核身份**：旧桥按 `%TEMP%/aitm-dsh-backend.json` 复用上一次
    会话留下的后端（多个 DSH 会话共用一个实例，不叠着起）。但**复用的实例可能是旧版**——实测
    踩到过：DSH 接过一个 `0.1.0-m1` 的旧后端（接口还叫 `news.get`），面板显示 51 个 action，
    `aitm_feed_today` 当场报「未知接口：feed.get」。
@@ -132,7 +143,7 @@ node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起
    差在哪、怎么处理」；设置节也会把版本 + 数据目录摊开显示。
    另：`version` 字段是 `npm_package_version`，本项目长期是 `0.1.0`，**别拿它当版本判据**，认 `apiRev`。
 
-12. **别写死仓库路径，也别把子进程的错误吞掉**（2026-10-05 真机「不能拉起后端」）：
+13. **别写死仓库路径，也别把子进程的错误吞掉**（2026-10-05 真机「不能拉起后端」）：
    早期版本 `AITM_REPO` 默认值写的是开发机的 `/home/user/ai-tasks-mgr` —— 换到 Windows 就变成
    「去一个不存在的目录起后端」，而 `stdio:'ignore'` 把 spawn 的错误也吞了，用户只看到
    「后端没起来」。现在：① 仓库默认**按插件自身位置推导**（`path.resolve(PLUGIN_DIR, '..')`，
@@ -151,7 +162,9 @@ iframe 打的是 `?embed=1&view=<board|calendar|feed>`：
 ## 已知边界
 
 - 面板是 **iframe**（先拿到"看得见"，M2 逐页改成 DSH 插槽原生组件）。
-- 插件会**按需拉起**我们的 web 宿主（只在回环上）；DSH 退出时一起收掉。
+- 后端默认是**进程内 L3**（M2 第三步）：内核跑在 DSH 自己的进程里，只留一个回环端口给 iframe；
+  **不再 spawn 常驻后端**（所以也没有「复用旧实例」「关不掉的孤儿进程」这两类问题了）。
+  两条逃生通道：`AITM_URL=<地址>` 连外部实例（保留旧后端护栏）、`AITM_L3=0` 退回 M1 的 spawn 桥。
 - 写操作已开（M2 第一步）：记想法 / 改状态两个写工具，一律走 `tools/pre-execute` 审批；
   「开工」等任务级动作还没做。
 - 工具卡在**刷新会话后**才吃到 meta（meta 随会话记录走）；老会话里的调用只有原始文本。

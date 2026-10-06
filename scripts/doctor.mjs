@@ -35,8 +35,11 @@ const cfg = host.diagnose();
 console.log('① 配置（插件会用的值）');
 info(`插件目录   ${cfg.pluginDir}`);
 info(`仓库       ${cfg.repo}${cfg.repoFromEnv ? '（来自 AITM_REPO）' : '（按插件位置推导）'}`);
-info(`AITM_URL   ${cfg.url ?? '(未设 → 自己拉起后端)'}`);
-info(`AITM_SPAWN ${cfg.spawn ? '开' : '关（0）'}`);
+info(`AITM_URL   ${cfg.url ?? '(未设 → use 进程内 L3)'}`);
+info(`后端来法   ${cfg.backendMode}${cfg.backendMode === 'l3' ? '（进程内，不起常驻子进程）' : cfg.backendMode === 'spawn' ? '（AITM_L3=0：旧的 spawn 桥）' : '（AITM_URL：外部实例）'}`);
+info(`AITM_SPAWN ${cfg.spawn ? '开' : '关（0）'}${cfg.backendMode === 'l3' ? '（L3 模式下用不到）' : ''}`);
+info(`L3 产物    ${cfg.l3Bundle}${cfg.l3BundlePresent ? '（有）' : '（缺 → 跑一次 npm run build）'}`);
+info(`面板产物   dist/index.html ${cfg.rendererDistPresent ? '有' : '缺 → 跑一次 npm run build'}`);
 info(`要求 apiRev ≥ ${cfg.apiRevRequired}`);
 info(`登记表     ${cfg.registry}${fs.existsSync(cfg.registry) ? '（存在）' : '（无）'}`);
 info(`后端日志   ${cfg.backendLog}${fs.existsSync(cfg.backendLog) ? '（存在）' : '（无）'}`);
@@ -46,12 +49,18 @@ info(`node       ${cfg.node}`);
 console.log('\n② 仓库自检');
 if (cfg.repoProblem) {
   bad(cfg.repoProblem);
-  info('这就是「不能拉起后端」最常见的原因：起后端要去仓库里跑 scripts/dev-web.mjs。');
+  info('这就是「不能拉起后端」最常见的原因：L3 要 import 仓库里的 dist-server/l3.mjs。');
   info('修：设 AITM_REPO=<仓库绝对路径>（Windows: setx AITM_REPO D:\\...\\ai-tasks-mgr，重开终端），');
   info('    或把 dsh-plugin/aitm.patch.yml 的 name: 指到目标仓库里的 dsh-plugin/index.js。');
   process.exit(1);
 }
 ok('仓库路径、package.json、scripts/dev-web.mjs、node_modules/vite 都在');
+if (cfg.backendMode === 'l3') {
+  if (!cfg.l3BundlePresent) bad('进程内 L3 产物不在（dist-server/l3.mjs）—— 在仓库跑一次 npm run build');
+  else ok('进程内 L3 产物在（dist-server/l3.mjs）');
+  if (!cfg.rendererDistPresent) bad('面板产物不在（dist/index.html）—— 在仓库跑一次 npm run build');
+  else ok('面板产物在（dist/index.html）');
+}
 
 /* ---- ③ 连/起 ---- */
 console.log('\n③ 起后端（或连已有实例）');
@@ -77,6 +86,7 @@ if (failure) {
 }
 
 const h = await (await fetch(`${base}/api/health`)).json();
+info(`（这次是 ${cfg.backendMode === 'l3' ? '插件进程内的 L3 服务' : '外部/spawn 的后端'}）`);
 ok(`后端可用：${base}`);
 info(`actions=${String(h.actions)}  apiRev=${String(h.apiRev ?? '(老后端没有)')}  version=${String(h.version ?? '?')}`);
 info(`数据目录 ${String(h.dataDir ?? '?')}`);
@@ -87,6 +97,6 @@ if ((h.apiRev ?? 1) < cfg.apiRevRequired) {
 ok('版本匹配，插件会用它');
 
 /* ---- 收尾：把自己起的后端收掉，不留孤儿 ---- */
-host.stop?.();
+await host.stop?.();
 console.log('\n（体检结束；若这次是它自己拉起的后端，已经收掉了）');
 process.exit(0);
