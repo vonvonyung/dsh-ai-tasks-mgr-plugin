@@ -79,6 +79,9 @@ async function waitFor(fn, ms, label) {
   }
 }
 
+// Windows 上 npm/pnpm 是 .cmd 垫片，直接 spawn 会 EINVAL —— 一律走 shell
+const WIN = process.platform === 'win32';
+
 const mkTmp = (prefix) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 const rm = (dir) => fs.rmSync(dir, { recursive: true, force: true });
 
@@ -274,7 +277,7 @@ async function main() {
 
   /* ⑥ 真命令：dsh plugin add（要 pnpm） */
   console.log('④ dsh plugin add 这条真命令');
-  const pnpm = spawnSync('pnpm', ['--version'], { encoding: 'utf8' });
+  const pnpm = spawnSync('pnpm', ['--version'], { encoding: 'utf8', shell: WIN });
   if (pnpm.status !== 0) {
     check('跳过 dsh plugin add（这台机器没有 pnpm）', true, '装了 pnpm 再来跑：npm i -g pnpm；同事机器上这条是真装的路径');
   } else {
