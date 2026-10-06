@@ -11,6 +11,9 @@
  *   AITM_REPO=D:\...\ai-tasks-mgr node scripts/doctor.mjs     # 试别的仓库
  *   AITM_URL=http://127.0.0.1:8731 node scripts/doctor.mjs    # 试连已在跑的实例
  *
+ * 两种装法都覆盖：① 开发（插件在仓库里，用仓库的内核）② 分发（同事从 npm 装的，
+ * 插件自带内核、机器上没有仓库）。报问题给同事时，把这一段输出整个贴过来就够定位了。
+ *
  * 退出码：0 = 后端可用；1 = 起不来（原因都打印了）
  */
 import fs from 'node:fs';
@@ -34,9 +37,18 @@ try {
 const cfg = host.diagnose();
 console.log('① 配置（插件会用的值）');
 info(`插件目录   ${cfg.pluginDir}`);
+info(`插件版本   ${cfg.pluginVersion}`);
 info(`仓库       ${cfg.repo}${cfg.repoFromEnv ? '（来自 AITM_REPO）' : '（按插件位置推导）'}`);
-info(`AITM_URL   ${cfg.url ?? '(未设 → use 进程内 L3)'}`);
-info(`后端来法   ${cfg.backendMode}${cfg.backendMode === 'l3' ? '（进程内，不起常驻子进程）' : cfg.backendMode === 'spawn' ? '（AITM_L3=0：旧的 spawn 桥）' : '（AITM_URL：外部实例）'}`);
+info(`AITM_URL   ${cfg.url ?? '(未设 → 用进程内内核)'}`);
+info(`自带内核   ${cfg.vendorL3}${cfg.vendorL3Present ? '（有）' : '（无）'}`);
+const MODE_TEXT = {
+  l3: '（仓库内进程内 L3，不起常驻子进程）',
+  vendor: '（包里自带内核，机器上不需要仓库）',
+  external: '（AITM_URL：连外部实例）',
+  spawn: '（AITM_L3=0：旧的 spawn 桥，保命通道）',
+  error: '（自检没过 —— 见下面第 ② 节）',
+};
+info(`后端来法   ${cfg.backendMode}${MODE_TEXT[cfg.backendMode] ?? ''}`);
 info(`AITM_SPAWN ${cfg.spawn ? '开' : '关（0）'}${cfg.backendMode === 'l3' ? '（L3 模式下用不到）' : ''}`);
 info(`L3 产物    ${cfg.l3Bundle}${cfg.l3BundlePresent ? '（有）' : '（缺 → 跑一次 npm run build）'}`);
 info(`面板产物   dist/index.html ${cfg.rendererDistPresent ? '有' : '缺 → 跑一次 npm run build'}`);
@@ -45,21 +57,28 @@ info(`登记表     ${cfg.registry}${fs.existsSync(cfg.registry) ? '（存在）
 info(`后端日志   ${cfg.backendLog}${fs.existsSync(cfg.backendLog) ? '（存在）' : '（无）'}`);
 info(`node       ${cfg.node}`);
 
-/* ---- ② 仓库自检 ---- */
-console.log('\n② 仓库自检');
-if (cfg.repoProblem) {
+/* ---- ② 仓库 / 自带内核 自检 ---- */
+console.log('\n② 仓库自检（分发模式可以没有仓库）');
+if (cfg.backendMode === 'vendor') {
+  info(`没有仓库，用包里的自带内核：${cfg.repoProblem ?? '(仓库路径没推导出来)'}`);
+  ok('自带内核在（dist-server/l3.mjs）');
+  if (cfg.vendorDistPresent) ok('面板产物在（包里的 dist/index.html）');
+  else bad('面板产物不在包里（dist/index.html）—— 面板会打不开，重装正式版');
+} else if (cfg.repoProblem) {
   bad(cfg.repoProblem);
-  info('这就是「不能拉起后端」最常见的原因：L3 要 import 仓库里的 dist-server/l3.mjs。');
-  info('修：设 AITM_REPO=<仓库绝对路径>（Windows: setx AITM_REPO D:\\...\\ai-tasks-mgr，重开终端），');
-  info('    或把 dsh-plugin/aitm.patch.yml 的 name: 指到目标仓库里的 dsh-plugin/index.js。');
+  info('这就是「不能拉起后端」最常见的原因：仓库模式要 import 仓库里的 dist-server/l3.mjs。');
+  info('修：① 设 AITM_REPO=<仓库绝对路径>（Windows: setx AITM_REPO D:\\...\\ai-tasks-mgr，重开终端），');
+  info('    或把 dsh-plugin/aitm.patch.yml 的 name: 指到目标仓库里的 dsh-plugin/index.js；');
+  info('    ② 或者用分发版（自带内核，机器上不需要仓库）：dsh-plugin/README「同事怎么装」。');
   process.exit(1);
-}
-ok('仓库路径、package.json、scripts/dev-web.mjs、node_modules/vite 都在');
-if (cfg.backendMode === 'l3') {
-  if (!cfg.l3BundlePresent) bad('进程内 L3 产物不在（dist-server/l3.mjs）—— 在仓库跑一次 npm run build');
-  else ok('进程内 L3 产物在（dist-server/l3.mjs）');
-  if (!cfg.rendererDistPresent) bad('面板产物不在（dist/index.html）—— 在仓库跑一次 npm run build');
-  else ok('面板产物在（dist/index.html）');
+} else {
+  ok('仓库路径、package.json、scripts/dev-web.mjs、node_modules/vite 都在');
+  if (cfg.backendMode === 'l3') {
+    if (!cfg.l3BundlePresent) bad('进程内 L3 产物不在（dist-server/l3.mjs）—— 在仓库跑一次 npm run build');
+    else ok('进程内 L3 产物在（dist-server/l3.mjs）');
+    if (!cfg.rendererDistPresent) bad('面板产物不在（dist/index.html）—— 在仓库跑一次 npm run build');
+    else ok('面板产物在（dist/index.html）');
+  }
 }
 
 /* ---- ③ 连/起 ---- */
@@ -86,7 +105,7 @@ if (failure) {
 }
 
 const h = await (await fetch(`${base}/api/health`)).json();
-info(`（这次是 ${cfg.backendMode === 'l3' ? '插件进程内的 L3 服务' : '外部/spawn 的后端'}）`);
+info(`（这次是 ${cfg.backendMode === 'l3' ? '插件进程内的 L3 服务' : cfg.backendMode === 'vendor' ? '包里自带的进程内内核' : '外部/spawn 的后端'}）`);
 ok(`后端可用：${base}`);
 info(`actions=${String(h.actions)}  apiRev=${String(h.apiRev ?? '(老后端没有)')}  version=${String(h.version ?? '?')}`);
 info(`数据目录 ${String(h.dataDir ?? '?')}`);

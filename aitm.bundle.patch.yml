@@ -1,0 +1,8 @@
+# AI 任务台插件作为 **profile bundle** 安装（`dsh plugin add`）时用的补丁。
+#
+# 和 `aitm.patch.yml`（开发路径，`--patch` 用）的区别只有一个：
+# 这里的 `name:` 是**包名** —— 包已经装在 profile 的 node_modules 里，由 Cordis loader 自己解析；
+# 开发路径没有装包，只能给绝对路径。两个文件互相独立，装法不同、别混用。
+- insert:
+    - id: aitm-plugin
+      name: dsh-plugin-aitm

@@ -32,7 +32,9 @@ export const inject = ['tools'];
  * 显式设了 AITM_REPO 就用它。
  */
 const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url));
-const REPO_DEFAULT = process.env.AITM_REPO ?? path.resolve(PLUGIN_DIR, '..');
+/** AITM_REPO 归一化：空串/纯空白当**没设**（Windows 上 `set AITM_REPO=` 就是空串，别让它变成「仓库是空路径」） */
+const REPO_ENV = (process.env.AITM_REPO ?? '').trim() || null;
+const REPO_DEFAULT = REPO_ENV ?? path.resolve(PLUGIN_DIR, '..');
 
 const DEFAULTS = {
   repo: REPO_DEFAULT,
@@ -57,6 +59,24 @@ const L3_BUNDLE = () => path.join(DEFAULTS.repo, 'dist-server', 'l3.mjs');
 const L3_SOURCE = () => path.join(DEFAULTS.repo, 'src', 'web', 'l3.ts');
 /** 面板 iframe 要的静态目录（vite build 的产物） */
 const RENDERER_DIST = () => path.join(DEFAULTS.repo, 'dist');
+
+/**
+ * 分发模式（同事从 npm 装的那条路）：**包里自带内核**，不需要机器上有仓库。
+ * `node scripts/vendor-plugin.mjs` 把仓库的 `dist-server/l3.mjs` 与 `dist/` 拷进插件目录，
+ * `npm pack` 会一起打进 tarball（见 package.json 的 `files`）。
+ */
+const VENDOR_L3 = () => path.join(PLUGIN_DIR, 'dist-server', 'l3.mjs');
+const VENDOR_DIST = () => path.join(PLUGIN_DIR, 'dist');
+const vendorPresent = () => exists(VENDOR_L3());
+
+/** 插件自己的版本（agent 装机时要一个「插件 ↔ 内核 apiRev」的版本三元组） */
+function pluginVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8'))?.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
 
 /** 写工具（要过审批闸）与它们的人话描述 —— 审批卡上必须一眼看出「这次会改什么」 */
 const WRITE_TOOLS = {
@@ -132,7 +152,7 @@ function readBackendLog() {
 function preflightRepo(repo) {
   if (!repo || typeof repo !== 'string') return 'AITM_REPO 没配（也不是从插件位置能推导出的路径）';
   if (!fs.existsSync(repo)) {
-    return `仓库目录不存在：${repo}（AITM_REPO=${process.env.AITM_REPO ?? '(未设，用插件位置推导)'}）`;
+    return `仓库目录不存在：${repo}（AITM_REPO=${REPO_ENV ?? '(未设，用插件位置推导)'}）`;
   }
   let pkg = null;
   try {
@@ -149,13 +169,20 @@ function preflightRepo(repo) {
   return null;
 }
 
-/** 起前自检失败时抛的错（附上「怎么办」三步） */
-function repoError(detail) {
-  return new Error(
-    `${detail}。处理：① 在 DSH 启动前设 AITM_REPO=<AI 任务台仓库的绝对路径>（Windows 例如 setx AITM_REPO D:\\...\\ai-tasks-mgr，然后重开终端）；` +
-      `② 或把 `+'`dsh-plugin/aitm.patch.yml` 的 `name:` 指到**那个仓库**里的 `dsh-plugin/index.js`（插件默认就按自己的位置推导仓库）；' +
-      `③ 确认那个仓库已 git pull 且 npm install 过。当前推导出的仓库：${DEFAULTS.repo}`,
-  );
+/** 起前自检失败时抛的错（附上「怎么办」几步） */
+function repoError(detail, plan = {}) {
+  const hint = plan.explicitRepo
+    ? `处理：① 你显式设了 AITM_REPO，它必须指向 AI 任务台仓库 —— 改对，或者在 DSH 启动前去掉它（去掉就用自带内核/自动推导）；` +
+      `② 确认那个仓库已 git pull 且 npm install 过；` +
+      `③ 不想要仓库：清掉 AITM_REPO，装正式版插件（自带内核，见 dsh-plugin/README「同事怎么装」）。`
+    : plan.noVendor
+      ? `处理：① 这个插件包里**没有自带内核**（缺 ${path.relative(PLUGIN_DIR, VENDOR_L3())}）—— 重装正式版（npm/pnpm 会带上），或拉仓库后跑 node scripts/vendor-plugin.mjs 生成；` +
+        `② 或者给仓库路径：DSH 启动前设 AITM_REPO=<AI 任务台仓库绝对路径>（Windows 例如 setx AITM_REPO D:\\...\\ai-tasks-mgr，然后重开终端）；` +
+        `③ 仓库记得 git pull + npm install（首次还要 npm run build）。`
+      : `处理：① 在 DSH 启动前设 AITM_REPO=<AI 任务台仓库的绝对路径>（Windows 例如 setx AITM_REPO D:\\...\\ai-tasks-mgr，然后重开终端）；` +
+        `② 或把 `+'`dsh-plugin/aitm.patch.yml` 的 `name:` 指到**那个仓库**里的 `dsh-plugin/index.js`（插件默认就按自己的位置推导仓库）；' +
+        `③ 确认那个仓库已 git pull 且 npm install 过。`;
+  return new Error(`${detail}。${hint}当前推导出的仓库：${DEFAULTS.repo}`);
 }
 
 /**
@@ -390,6 +417,26 @@ function incompatibleError(base, h, how) {
   );
 }
 
+/**
+ * 这个插件要的后端从哪来 —— **只在这一处决策**（别在多个分支里各判一次，R10 就是那么来的）：
+ *   external  `AITM_URL` 显式指向已有实例（最高优先级，保留 apiRev 护栏）
+ *   l3        仓库齐全（`AITM_REPO`，或插件上一级就是 AI 任务台仓库）→ 用仓库的内核（今天的开发路径）
+ *   vendor    没有仓库，但**包里自带** `dist-server/l3.mjs`（同事从 npm 装的这条）→ 用自带内核
+ *   spawn     `AITM_L3=0` 的旧 spawn 桥（保命通道，仍然要仓库）
+ * 兜底是 error：显式设了 `AITM_REPO` 却没通过自检 → 报错而不是悄悄换成自带内核（用户要的是那个仓库）。
+ */
+function backendPlan() {
+  if (DEFAULTS.url) return { mode: 'external' };
+  if (DEFAULTS.l3) {
+    const problem = preflightRepo(DEFAULTS.repo);
+    if (!problem) return { mode: 'l3' };
+    if (REPO_ENV) return { mode: 'error', why: problem, explicitRepo: true };
+    if (vendorPresent()) return { mode: 'vendor', why: problem };
+    return { mode: 'error', why: problem, noVendor: true };
+  }
+  return { mode: 'spawn' };
+}
+
 async function waitHealth(base, ms, opts = {}) {
   const until = Date.now() + ms;
   for (;;) {
@@ -411,12 +458,9 @@ async function waitHealth(base, ms, opts = {}) {
 
 /** 调一个 action：进程内 L3 直连内核；外部后端（AITM_URL）/旧桥走 POST /api/<action> */
 async function call(action, payload = {}) {
-  if (DEFAULTS.l3 && !DEFAULTS.url) {
-    const base = await ensureBase();
-    if (state.l3) return state.l3.invoke(action, payload);
-    return httpCall(base, action, payload);
-  }
   const base = await ensureBase();
+  // 进程内（l3 / vendor）直连内核；external / 旧桥走 HTTP
+  if (state.l3) return state.l3.invoke(action, payload);
   return httpCall(base, action, payload);
 }
 
@@ -449,41 +493,57 @@ export async function ensureBase() {
     // ── 默认：进程内 L3（M2 第三步）──
     // 不起常驻子进程、不走 HTTP（call() 直连内核）；只留一个回环端口给面板 iframe。
     // 没有「复用旧实例」这一步 ⇒ R10 那类「连上 51 个 action 的旧后端」从根上不存在了。
-    if (DEFAULTS.l3) {
-      const problem = preflightRepo(DEFAULTS.repo);
-      if (problem) throw repoError(problem);
-      const bundleProblem = await ensureL3Bundle(DEFAULTS.repo);
-      if (bundleProblem) throw new Error(`${bundleProblem}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build（或 npm install 补依赖）`);
-      const distProblem = ensureRendererDist(DEFAULTS.repo);
-      if (distProblem) throw new Error(`${distProblem}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build`);
+    const plan = backendPlan();
+    if (plan.mode === 'error') throw repoError(plan.why, plan);
 
+    if (plan.mode === 'l3' || plan.mode === 'vendor') {
+      const vendored = plan.mode === 'vendor';
+      if (!vendored) {
+        const bundleProblem = await ensureL3Bundle(DEFAULTS.repo);
+        if (bundleProblem) throw new Error(`${bundleProblem}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build（或 npm install 补依赖）`);
+        const distProblem = ensureRendererDist(DEFAULTS.repo);
+        if (distProblem) throw new Error(`${distProblem}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build`);
+      }
+
+      const bundlePath = vendored ? VENDOR_L3() : L3_BUNDLE();
+      const staticDir = vendored ? (exists(path.join(VENDOR_DIST(), 'index.html')) ? VENDOR_DIST() : null) : RENDERER_DIST();
       let mod;
       try {
-        mod = await import(pathToFileURL(L3_BUNDLE()).href);
+        mod = await import(pathToFileURL(bundlePath).href);
       } catch (err) {
-        throw new Error(`进程内 L3 加载失败（${L3_BUNDLE()}）：${String(err?.message ?? err)}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build`);
+        throw new Error(
+          vendored
+            ? `自带内核加载失败（${bundlePath}）：${String(err?.message ?? err)}。处理：重装插件（npm/pnpm 会带上 dist-server/l3.mjs）`
+            : `进程内 L3 加载失败（${bundlePath}）：${String(err?.message ?? err)}。处理：在 ${DEFAULTS.repo} 跑一次 npm run build`,
+        );
       }
       if (typeof mod?.createL3 !== 'function') {
-        throw new Error(`进程内 L3 产物不完整（${L3_BUNDLE()} 里没有 createL3）。处理：删掉它，再到 ${DEFAULTS.repo} 跑一次 npm run build`);
+        throw new Error(
+          vendored
+            ? `自带内核不完整（${bundlePath} 里没有 createL3）。处理：重装插件；或拉仓库后跑 node scripts/vendor-plugin.mjs 重新生成`
+            : `进程内 L3 产物不完整（${bundlePath} 里没有 createL3）。处理：删掉它，再到 ${DEFAULTS.repo} 跑一次 npm run build`,
+        );
       }
 
       const l3 = await mod.createL3({
-        // 数据目录与 dev-web 同口径：AI_TASKS_HOME 优先，否则仓库里的 .aitasks
-        //（Windows 真机上那份数据就在仓库内，用户不用多设任何变量）
-        home: process.env.AI_TASKS_HOME ?? path.join(DEFAULTS.repo, '.aitasks'),
+        // 数据目录：AI_TASKS_HOME 优先；仓库模式下用仓库里的 .aitasks（Windows 真机上那份数据就在仓库内，
+        // 用户不用多设任何变量），自带内核模式没有仓库可言 → 用 ~/.ai-tasks-mgr（和 Electron 回退口径一致）
+        home: vendored
+          ? process.env.AI_TASKS_HOME ?? path.join(os.homedir(), '.ai-tasks-mgr')
+          : process.env.AI_TASKS_HOME ?? path.join(DEFAULTS.repo, '.aitasks'),
         port: 0,
         host: '127.0.0.1',
-        staticDir: RENDERER_DIST(),
-        version: '0.1.0',
+        staticDir,
+        version: pluginVersion(),
       });
       const h = await l3.health();
-      if (!compatible(h)) throw incompatibleError(l3.base, h, '进程内 L3');
+      if (!compatible(h)) throw incompatibleError(l3.base, h, vendored ? '自带内核' : '进程内 L3');
       state.l3 = l3;
-      state.mode = 'l3';
+      state.mode = vendored ? 'vendor' : 'l3';
       state.base = l3.base;
       state.identity = backendId(h);
-      note(`[host] 进程内 L3 就绪：${l3.base}（数据目录 ${l3.home}，共 ${h.actions} 个 action）`);
-      logLine(`[host] in-process L3 ready at ${l3.base} (home=${l3.home}, actions=${h.actions})`);
+      note(`[host] ${vendored ? '自带内核（分发模式）' : '进程内 L3'}就绪：${l3.base}（数据目录 ${l3.home}，共 ${h.actions} 个 action）`);
+      logLine(`[host] in-process L3 ready at ${l3.base} (home=${l3.home}, actions=${h.actions}, vendored=${String(vendored)})`);
       return state.base;
     }
 
@@ -577,16 +637,25 @@ export function diagnose() {
   return {
     pluginDir: PLUGIN_DIR,
     repo: DEFAULTS.repo,
-    repoFromEnv: process.env.AITM_REPO ?? null,
+    repoFromEnv: REPO_ENV,
     repoProblem: preflightRepo(DEFAULTS.repo),
     url: DEFAULTS.url || null,
     spawn: DEFAULTS.spawn,
     apiRevRequired: REQUIRED_API_REV,
     approve: DEFAULTS.approve,
-    /** 后端来法：l3（进程内，默认）/ external（AITM_URL）/ spawn（AITM_L3=0 的旧桥） */
-    backendMode: DEFAULTS.url ? 'external' : DEFAULTS.l3 ? 'l3' : 'spawn',
+    pluginVersion: pluginVersion(),
+    /**
+     * 后端来法（**实际会走哪条**，不只是配置）：l3（仓库内进程内 L3）/ vendor（包里自带内核）/
+     * external（AITM_URL）/ spawn（AITM_L3=0 的旧桥）/ error（自检没过，起不来）。
+     */
+    backendMode: backendPlan().mode,
+    backendWhy: backendPlan().why ?? null,
+    dataHome: process.env.AI_TASKS_HOME ?? null,
     l3Bundle: L3_BUNDLE(),
     l3BundlePresent: exists(L3_BUNDLE()),
+    vendorL3: VENDOR_L3(),
+    vendorL3Present: vendorPresent(),
+    vendorDistPresent: exists(path.join(VENDOR_DIST(), 'index.html')),
     rendererDistPresent: exists(path.join(RENDERER_DIST(), 'index.html')),
     runningMode: state.mode,
     registry: PIDFILE,
@@ -741,6 +810,8 @@ export function apply(ctx) {
               mode: state.mode,
               repo: DEFAULTS.repo,
               repoProblem: preflightRepo(DEFAULTS.repo),
+              vendorL3: vendorPresent(),
+              pluginVersion: pluginVersion(),
               apiRevRequired: REQUIRED_API_REV,
               identity: state.identity,
               log: state.log.slice(-8),
@@ -1412,5 +1483,8 @@ export function apply(ctx) {
     state.exitHook = true;
     process.once('exit', stop);
   }
-  ctx.logger?.info?.(`[aitm] 已加载：repo=${DEFAULTS.repo} url=${DEFAULTS.url || '(自动拉起)'}`);
+  ctx.logger?.info?.(
+    `[aitm] 已加载：v${pluginVersion()} 后端来法=${backendPlan().mode}` +
+      `（repo=${DEFAULTS.repo} url=${DEFAULTS.url || '(无)'} 自带内核=${vendorPresent() ? '有' : '无'}）`,
+  );
 }

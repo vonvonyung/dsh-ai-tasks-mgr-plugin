@@ -1,26 +1,58 @@
 {
   "name": "dsh-plugin-aitm",
-  "version": "0.1.0-m1",
-  "private": true,
+  "version": "0.2.0",
   "type": "module",
-  "description": "AI 任务台 × DeepSeek Harness 插件（M1：只读面板 + 三个只读工具）",
+  "description": "AI 任务台 × DeepSeek Harness 插件：11 个工具（想法/任务/日历/备份）+ 右侧栏面板（原生日历）",
   "license": "MIT",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js"
   },
   "dsh": {
+    "bundle": {
+      "patch": "aitm.bundle.patch.yml"
+    },
     "client": {
       "platform": "web"
     }
   },
   "scripts": {
     "verify": "node scripts/verify-dsh.mjs",
-    "doctor": "node scripts/doctor.mjs"
+    "doctor": "node scripts/doctor.mjs",
+    "pack:vendor": "node ../scripts/vendor-plugin.mjs",
+    "prepack": "node ../scripts/vendor-plugin.mjs --skip-build --no-pack"
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.0-rc.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "harness",
+    "deepseek-harness",
+    "plugin",
+    "ai-tasks-mgr",
+    "aitm"
+  ],
+  "files": [
+    "index.js",
+    "client.js",
+    "supervisor.mjs",
+    "aitm.patch.yml",
+    "aitm.bundle.patch.yml",
+    "README.md",
+    "scripts/",
+    "dist-server/",
+    "dist/"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.2.0-rc.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vonvonyung/ai-tasks-mgr.git",
+    "directory": "dsh-plugin"
   }
 }

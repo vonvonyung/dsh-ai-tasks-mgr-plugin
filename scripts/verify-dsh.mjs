@@ -34,6 +34,24 @@ const DSH_ENTRY = path.join(DSH_PKG, 'lib', 'bin.js');
 const dshArgs = (rest) => [DSH_ENTRY, ...rest];
 const PATCH = path.join(ROOT, 'aitm.patch.yml');
 
+/*
+ * 分发安装（`dsh plugin add` 装进 profile 的那份）里**没有仓库** —— 这个脚本验的是开发路径
+ * （插件在仓库里、内核从仓库现编、用 --patch 挂载），没仓库就没对象可验。
+ * 直说一句然后退出，别让同事看到一堆「失败」（同事装机自检用 doctor，见 README「同事怎么装」）。
+ */
+const selfPkgPath = path.join(REPO, 'package.json');
+let selfPkg = null;
+try {
+  selfPkg = JSON.parse(fs.readFileSync(selfPkgPath, 'utf8'));
+} catch {
+  /* 没有仓库 */
+}
+if (selfPkg?.name !== 'ai-tasks-mgr') {
+  console.log(`这个安装里没有 AI 任务台仓库（推导出的仓库 = ${REPO}）。`);
+  console.log('verify-dsh 是**开发侧**自检（要仓库）；装机自检请跑：node scripts/doctor.mjs');
+  process.exit(0);
+}
+
 const results = [];
 /** 客户端半边声明的服务依赖（离线渲染那条里读出来，给 boot 图那条做「有没有人提供」用） */
 let clientInject = [];
