@@ -1,4 +1,0 @@
-# 由 verify-dsh.mjs 生成；手工用也可以改这里的路径
-- insert:
-    - id: aitm-plugin
-      name: "/home/user/ai-tasks-mgr/dsh-plugin/index.js"

@@ -32,7 +32,8 @@
    npx -y @deepseek-ai/dsh@0.2.0-rc.2 web --patch <repo>/dsh-plugin/aitm.patch.yml
    ```
 
-   `aitm.patch.yml` 里的 `name:` 是**本机绝对路径**，换机器/Windows 要改（`verify-dsh.mjs` 会按当前机器自动生成一份）。
+   `aitm.patch.yml` 里的 `name:` 是**本机绝对路径**，所以它**不进 git**（模板见 `aitm.patch.yml.example`）：
+   跑 `node scripts/make-patch.mjs` 就地生成（`verify-dsh.mjs` 也会按当前机器自动生成一份）。
 
 3. 环境变量（可选，不设就用默认）：
 
@@ -63,7 +64,7 @@
    npx -y @deepseek-ai/dsh@0.2.0-rc.2 web --port 3081
    ```
 
-   右侧栏就会出现「AI 任务台」，对话里 11 个工具可用。**数据目录**默认 `~/.ai-tasks-mgr`
+   右侧栏就会出现「AI 任务台」，对话里 12 个工具可用。**数据目录**默认 `~/.ai-tasks-mgr`
    （想换就设 `AI_TASKS_HOME`；开发机那份在仓库 `.aitasks` 里，两边各自独立）。
 
 3. **装机后自检**（有 DSH 问题先跑这个）：脚本头尾各有一行**汇总**（插件版本 · DSH 版本 ·
@@ -80,7 +81,7 @@
 > `web.mjs`/`seed.mjs` 是 CLI 入口、插件用不上）与 `dist/` 拷进 `dsh-plugin/`（两边都在 `.gitignore` 里，
 > 不进 git），`npm pack` 按 `files` 白名单打包。装了却没内核会**打包时就报错**，不会拖到同事装机才炸。
 
-## 十一个工具（模型可调用）
+## 十二个工具（模型可调用）
 
 | 工具 | 读写 | 干的事 |
 |---|---|---|
@@ -95,9 +96,12 @@
 | `aitm_idea_set_status` | **写** | 改想法的状态（核心校验合法流转，非法流转会带着原因返回） |
 | `aitm_task_start` | **写** | 开工：想法 + 一句指令 → 起一个 AI 任务（建 worktree、跑 CLI） |
 | `aitm_backup_now` | **写** | 立即备份（`lean` 全量配置 / `full` 连 worktree 一起） |
+| `aitm_task_accept` | **写** | 验收任务：默认合并回基线（`merge:false` = 只记验收）；验证没过会被拒绝，除非 `acknowledgeVerifyFailure:true` |
 
-只读工具**不问**；**写工具 4 个**（`idea_create` / `idea_set_status` / `task_start` /
-`backup_now`）一律走审批闸 —— 它们会动仓库、worktree 和磁盘。
+只读工具**不问**；**写工具 5 个**（`idea_create` / `idea_set_status` / `task_start` /
+`backup_now` / `task_accept`）一律走审批闸 —— 它们会动仓库、worktree 和磁盘。
+验收这条的审批卡会写明「把《标题》验收并合并到 `<基线>`」（或「只记验收（不碰 git）」、
+「验证没过也要合」），**别在不看卡的情况下点同意**。
 
 **写操作走审批闸**（`tools/pre-execute`，M2 第一步）：
 
@@ -113,8 +117,8 @@
 
 ## 对话里的工具卡（`tool.call.toolview`，M2 第二步）
 
-十一个工具在对话流里**不是一行灰字**，而是各自一张卡（想法卡 / 详情卡 / 列表卡 / 合集卡 /
-健康卡 / 任务卡 / 任务列表卡 / 日历卡 / 仓库卡 / 备份卡）：
+十二个工具在对话流里**不是一行灰字**，而是各自一张卡（想法卡 / 详情卡 / 列表卡 / 合集卡 /
+健康卡 / 任务卡 / 任务列表卡 / 日历卡 / 仓库卡 / 备份卡 / **验收卡**）：
 
 - 数据怎么来：**工具侧**声明 `output.presentationMeta(args, value)` —— DSH 只对顶层调用计算一次，
   把返回值**逐字**放进会话记录的 `tool/result.meta`；**客户端侧**注册 keyed 槽
@@ -126,7 +130,7 @@
 - 文案走 `ctx.locale.register('aitm', { zh, en })` + `t('card.…', { n })`（`{n}` 由 locale 服务插值）。
 - 卡片是纯 react-dom 组件（`window.__ModuleLoader__.load` 里 require react/jsx-runtime），
   官方原子件（图标 / TextShimmer / Pill）取自 `@deepseek-ai/dsh-client-ui-primitives`，**取不到就降级成纯文本样式**。
-- 十一个 key ＝ 十一个工具名；拼错永不渲染（keyed 槽只认精确 key），没认领的调用走 DSH 的通用行。
+- 十二个 key ＝ 十二个工具名；拼错永不渲染（keyed 槽只认精确 key），没认领的调用走 DSH 的通用行。
 - **原生日历**（M2 第四步）：右侧栏的「日历」不再套 iframe，而是 React 月历（`CalendarGrid` 纯展示 +
   `AitmCalendar` 取数）：42 格、周一起排、想法蓝点 / 收藏黄点、翻月 / 今天 / 刷新、当天明细。
   数据走插件自己的 `/api`（`idea.list` + `feed.get`），并订阅 `/api/events` 去抖刷新；
@@ -136,22 +140,27 @@
   与内核**逐字一致**（`verify-dsh` 会直接读那个文件比对）；筛选走**服务端查**（`idea.list` 带 q/status）、
   计数一律取 `overview.get` 全量（R7）；拖拽改状态走 `idea.setStatus`，非法流转把内核原话显示出来。
   点卡片在原地摊开详情（复用工具卡那张 `IdeaDetailCard`），要看对话/差异再点「在完整面板里打开」。
+  详情顶上还有一排**验收**：`验收并合并` / `只记验收` / 验证状态（`验证通过` / 红字`验证没过`）；
+  验证没过时会出现「验证没过也要合」勾选框 —— 与完整面板、与对话里的 `aitm_task_accept` 是**同一把门**
+  （人在这里点＝人工审批，所以不再弹审批卡）。
 
 ## 验证
 
 ```bash
 node scripts/verify-dist.mjs    # 12 项：**分发路径**（打 tarball → 解包 → 手工搭一个「pnpm 装完」的 profile
-                                #        → 在没有仓库的目录起 dsh web：mode=vendor / apiRev=2 / 63 个 action /
+                                #        → 在没有仓库的目录起 dsh web：mode=vendor / apiRev=2 / 64 个 action /
                                 #        面板静态产物可取 → 假模型跑工具 → 真命令 dsh plugin add 之后再跑一轮）
-node scripts/verify-dsh.mjs     # 79 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
-                                #        （11 种卡片 + 注册 / 文案 + 失败 / 运行 / 兜底 / 异常块 + 两条日历网格）
+node scripts/verify-dsh.mjs     # 87 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
+                                #        （12 种卡片 + 注册 / 文案 + 失败 / 运行 / 兜底 / 异常块 + 两条日历网格）
                                 #        + 旧后端护栏 + 起前自检
                                 #        + 审批闸（写→ask / 只读→放行 / 缺参→deny / 下游优先 / 取消）
                                 #        + 激活 + boot 图 + 分片送达 + inject 服务都有提供者（防 R9 式 pending 白屏） + 端到端真数据
                                 #        + meta 落盘（health / 写想法） + 写操作 fail-closed + 放行后落盘
                                 #        + 后端来法（默认进程内 L3 / AITM_URL / AITM_L3=0）+ 不留常驻后端进程
-                                #        + 工具层（真 L3 + 临时数据目录：11 个工具的输出过宿主同款 schema，含负例）
+                                #        + 工具层（真 L3 + 临时数据目录：12 个工具的输出过宿主同款 schema，含负例）
                                 #        + 原生日历的取数通道（postAction 打真 L3 / 报错抛出 / 跨源 OPTIONS 预检带 CORS 头）
+                                #        + 验收：写工具 ask / 缺参 deny / 审批卡文案；验收卡三种形态（合并 / 只记 / 被门拦下）；
+                                #          真 L3 打一次「验收不存在的任务」拿干净错误
                                 #        + 原生看板：列序/分桶/列渲染/空列/离线 7 列骨架、**与内核 labels.ts 逐字比对**、
                                 #          两份词典键一致（zh 57 / en 57）、数据面走 postAction（服务端筛选 / 全量计数 /
                                 #          星标写回 / 非法流转带原因）

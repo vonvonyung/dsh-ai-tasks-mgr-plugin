@@ -21,6 +21,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { expectedActions } from './expected-actions.mjs';
+
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = process.env.AITM_REPO ?? path.resolve(ROOT, '..');
@@ -54,6 +56,11 @@ if (selfPkg?.name !== 'ai-tasks-mgr') {
 }
 
 const results = [];
+/**
+ * 期望的 action 数：**从内核源码推导**（`scripts/expected-actions.mjs`），读不到才退回 63。
+ * 别再硬编码 —— 内核加一个 action 就让一串断言集体变红，红得没有信息量（2026-10-06 踩过）。
+ */
+const EXPECTED_ACTIONS = expectedActions(REPO, 63);
 /**
  * client.js 的指纹，算法与 DSH 的 `artifactRevision` **逐字一致**
  * （`dsh-client-modules`：sha1("plugin-artifact"\0) + 各字段带长度前缀，取前 12 位）。
@@ -229,7 +236,7 @@ async function checkRender() {
   globalThis.fetch = async (url) =>
     String(url).includes('/aitm-plugin/config')
       ? { ok: true, json: async () => ({ base: 'http://127.0.0.1:1', repo: REPO }) }
-      : { ok: true, json: async () => ({ ok: true, actions: 63 }) };
+      : { ok: true, json: async () => ({ ok: true, actions: EXPECTED_ACTIONS }) };
 
   const React = require('react');
   const { renderToStaticMarkup } = require('react-dom/server');
@@ -241,8 +248,8 @@ async function checkRender() {
   const cardTools = loaded.exports.__cardTools ?? [];
   const cardRegs = regs.filter((r) => r.d.name === 'tool.call.toolview');
   check(
-    '11 个工具都注册了工具卡（keyed，key = 工具名）',
-    cardTools.length === 11 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
+    '12 个工具都注册了工具卡（keyed，key = 工具名）',
+    cardTools.length === 12 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
     cardRegs.map((r) => r.d.key).join(', '),
   );
   check('工具卡挂在我们自己的文案表上', cardRegs.every((r) => r.d.locale === 'aitm') && Object.keys(locales.aitm?.zh ?? {}).length > 0, `ns=${Object.keys(locales).join(',')}`);
@@ -265,8 +272,8 @@ async function checkRender() {
   const feedHtml = render({ toolName: 'aitm_feed_today', phase: 'result', block: resultBlock({ kind: 'feed', github: 13, bilibili: 60, favorites: 2, top: [{ title: 'OpenCardboard', source: 'github' }] }) });
   check('合集卡：三个计数 + 条目', feedHtml.includes('13') && feedHtml.includes('60') && feedHtml.includes('OpenCardboard'));
 
-  const healthHtml = render({ toolName: 'aitm_health', phase: 'result', block: resultBlock({ kind: 'health', ok: true, actions: 63, apiRev: 2, version: '0.1.0', dataDir: 'D:\\x\\.aitasks' }) });
-  check('健康卡：正常 + action 数 + apiRev', healthHtml.includes('正常') && healthHtml.includes('63') && healthHtml.includes('apiRev=2'));
+  const healthHtml = render({ toolName: 'aitm_health', phase: 'result', block: resultBlock({ kind: 'health', ok: true, actions: EXPECTED_ACTIONS, apiRev: 2, version: '0.1.0', dataDir: 'D:\\x\\.aitasks' }) });
+  check('健康卡：正常 + action 数 + apiRev', healthHtml.includes('正常') && healthHtml.includes(String(EXPECTED_ACTIONS)) && healthHtml.includes('apiRev=2'));
 
   const detailHtml = render({ toolName: 'aitm_idea_get', phase: 'result', block: resultBlock({ kind: 'idea-detail', id: 'idea-9', title: '给日历加导出', status: 'ready', tags: ['日历'], priority: 'p1', description: '导出成 .ics', tasks: [{ id: 't_1', status: 'succeeded', turns: 2 }] }) });
   check('详情卡：标题 + 状态 + 标签 + 正文 + 任务', detailHtml.includes('给日历加导出') && detailHtml.includes('日历') && detailHtml.includes('导出成 .ics') && detailHtml.includes('t_1'));
@@ -385,6 +392,17 @@ async function checkRender() {
     B.IDEA_ORDER.every((st) => B.IDEA_LABEL.zh[st] === dict.zh?.[`board.col.${st}`]),
   );
 
+  const acceptHtml = render({ toolName: 'aitm_task_accept', phase: 'result', block: { ...resultBlock({ kind: 'accept', accepted: true, merged: true, taskId: 't_9', ideaTitle: '给日历加导出', baseRef: 'arena/x', detail: 'Fast-forward', verify: { ok: true, note: '通过：npm run verify' } }), call: { name: 'aitm_task_accept', argsRaw: '{"taskId":"t_9"}' } } });
+  check(
+    '验收卡：标题 + 已合并 + 基线 + 验证通过',
+    acceptHtml.includes('给日历加导出') && acceptHtml.includes('已合并') && acceptHtml.includes('arena/x') && acceptHtml.includes('验证通过'),
+    `${acceptHtml.length} 字节`,
+  );
+  const acceptOnlyHtml = render({ toolName: 'aitm_task_accept', phase: 'result', block: { ...resultBlock({ kind: 'accept', accepted: true, merged: false, taskId: 't_9', ideaTitle: '给日历加导出', detail: '已标记验收（未合并）' }), call: { name: 'aitm_task_accept', argsRaw: '{}' } } });
+  check('验收卡：只记验收写明「未合并」', acceptOnlyHtml.includes('已记验收（未合并）'));
+  const acceptFailHtml = render({ toolName: 'aitm_task_accept', phase: 'result', block: { ...resultBlock({ kind: 'accept', ok: false, error: '验证没过，没有合并：未通过：npm test。勾上「验证没过也要合」再点一次。', needsAcknowledge: true, taskId: 't_9' }), call: { name: 'aitm_task_accept', argsRaw: '{}' }, isError: false, error: undefined } });
+  check('验收卡：验证没过被拦下时把原因原样显示', acceptFailHtml.includes('验证没过') || acceptFailHtml.includes('没有合并'), `${acceptFailHtml.length} 字节`);
+
   const BoardPanel = loaded.exports.__components.AitmBoard;
   const boardHtml = renderToStaticMarkup(React.createElement(BoardPanel, { base: null, onOpenFull: () => {} }));
   check(
@@ -392,6 +410,8 @@ async function checkRender() {
     (boardHtml.match(/data-col=/g) ?? []).length === 7 && boardHtml.includes('data-board="board"'),
     `${boardHtml.length} 字节`,
   );
+  // 详情里的验收条要有**结构**（服务端渲染没有数据时是空的，所以只断言组件认识 accept 这条通道）
+  check('原生看板认识验收通道（组件导出 + 文案在词典里）', Boolean(loaded.exports.__components.AitmBoard) && typeof dict.zh?.['board.accept'] === 'string' && typeof dict.zh?.['board.acceptOnly'] === 'string');
 
   /* ---- 原生日历（不走 iframe 的那块）---- */
   const H = loaded.exports.__calendarHelpers;
@@ -441,8 +461,8 @@ async function checkWriteGate() {
   host.apply(ctx);
 
   const names = regs.tools.map((t) => t.name ?? t.definition?.name).filter(Boolean);
-  const writeTools = ['aitm_idea_create', 'aitm_idea_set_status', 'aitm_task_start', 'aitm_backup_now'];
-  check('四个写工具都注册了', writeTools.every((n) => names.includes(n)), names.join(', '));
+  const writeTools = ['aitm_idea_create', 'aitm_idea_set_status', 'aitm_task_start', 'aitm_backup_now', 'aitm_task_accept'];
+  check('五个写工具都注册了', writeTools.every((n) => names.includes(n)), names.join(', '));
 
   const gate = regs.hooks.find((h) => h.name === 'tools/pre-execute')?.fn;
   if (!check('注册了 tools/pre-execute 闸门', Boolean(gate))) return;
@@ -474,6 +494,17 @@ async function checkWriteGate() {
   check('开工缺 ideaId → deny', noIdea?.kind === 'deny');
   const badMode = await gate({ name: 'aitm_backup_now', arguments: { mode: '全部' }, signal: { aborted: false } }, allow);
   check('备份 mode 写错 → deny（并说清只能是 lean/full）', badMode?.kind === 'deny' && /lean/.test(String(badMode.reason)));
+
+  /* 验收（aitm_task_accept）：合并是不可逆动作 —— 审批卡上必须写清「哪条想法、合到哪」，缺参直接 deny */
+  const acceptAsk = await gate({ name: 'aitm_task_accept', arguments: { taskId: 't_nope' }, signal: { aborted: false } }, allow);
+  check('验收（aitm_task_accept）→ ask', acceptAsk?.kind === 'ask', String(acceptAsk?.displayReason?.zh ?? '').slice(0, 80));
+  check(
+    '验收的审批卡写明「只记验收（不碰 git）」与「验证没过也要合」',
+    /只记验收（不碰 git）/.test(String((await gate({ name: 'aitm_task_accept', arguments: { taskId: 't_x', merge: false }, signal: { aborted: false } }, allow))?.displayReason?.zh ?? '')) &&
+      /验证没过也要合/.test(String((await gate({ name: 'aitm_task_accept', arguments: { taskId: 't_x', acknowledgeVerifyFailure: true }, signal: { aborted: false } }, allow))?.displayReason?.zh ?? '')),
+  );
+  const noTask = await gate({ name: 'aitm_task_accept', arguments: {}, signal: { aborted: false } }, allow);
+  check('验收缺 taskId → deny', noTask?.kind === 'deny');
 }
 
 /* ---------------- ⑤ 旧后端护栏（不用起 DSH：假一个老版本的后端）---------------- */
@@ -566,7 +597,7 @@ function checkNoResidentBackend() {
 }
 
 /**
- * ⑫ L4 工具（11 个）：拿真 L3 数据把每个工具的 execute() 跑一遍。
+ * ⑫ L4 工具（12 个）：拿真 L3 数据把每个工具的 execute() 跑一遍。
  *
  * 为什么能不起 DSH 也测：插件默认走**进程内 L3**，所以在 Node 里 import 插件 + 调
  * ensureBase() 就能拿到真内核；工具本体是纯函数式的（`execute(args)` → 值）。
@@ -594,7 +625,7 @@ async function checkTools() {
     host.apply(fakeCtx);
 
     const names = [...tools.keys()].sort();
-    check('11 个工具全部注册', names.length === 11, names.join(', '));
+    check('12 个工具全部注册', names.length === 12, names.join(', '));
 
     // 注意：`defineTool` 在注册时已经把 spec 转成 JSON Schema 存在 `tool.output.schema` 上，
     // 这里必须**直接用**它 —— 再调一次 valueSchemaSpecToJsonSchema 会报
@@ -610,13 +641,15 @@ async function checkTools() {
     await tools.get('aitm_idea_create').execute({ title: 'L4 工具验收：给任务卡片加用时', tags: ['测试'] });
 
     const cases = [
-      ['aitm_health', {}, (v) => v.ok === true && v.actions === 63 && v.apiRev === 2],
+      ['aitm_health', {}, (v) => v.ok === true && v.actions === EXPECTED_ACTIONS && v.apiRev === 2],
       ['aitm_idea_list', { q: 'L4 工具验收' }, (v) => v.total === 2],
       ['aitm_idea_get', { id: a.id }, (v) => v.title === 'L4 工具验收：把日历导出成 ICS' && Array.isArray(v.tasks)],
       ['aitm_calendar_day', { day: dayKey }, (v) => v.ideas.length === 2 && v.monthIdeas >= 2],
       ['aitm_calendar_day', { day: '2020-01-01' }, (v) => v.ideas.length === 0],
       ['aitm_task_status', {}, (v) => Array.isArray(v.items)],
       ['aitm_repo_status', {}, (v) => Array.isArray(v.repos)],
+      // 验收：没有这条任务 → 干净的错误（不是抛栈），且要带 taskId 好让模型自己纠
+      ['aitm_task_accept', { taskId: 't_not_exist' }, (v) => v.ok === false && typeof v.error === 'string' && v.error.length > 0],
       // 写工具本体也能单独跑（审批闸是**另一层**，⑦ 单独验）：这里只证明它写得出东西
       ['aitm_backup_now', { mode: 'lean', label: 'L4 验证' }, (v) => v.ok === true && v.files >= 1 && v.mode === 'lean'],
       // 负例：不存在的想法要**优雅报错**（不抛到宿主）
@@ -908,9 +941,9 @@ async function checkDsh() {
   const code = await new Promise((resolve) => headless.on('exit', resolve));
 
   const toolResult = /"type":"tool_result"[^\n]*/.exec(out)?.[0] ?? '';
-  // 判据：① headless 正常退出（0）② 工具返回的是**真后端**的 health（63 个 action 是我们 core 的 action 数）
+  // 判据：① headless 正常退出（0）② 工具返回的是**真后端**的 health（action 数取自 core 源码）
   //       ③ 没有因为我们拉起的长驻子进程而卡住不退出
-  const hasRealData = /63 个 action/.test(toolResult);
+  const hasRealData = toolResult.includes(`${String(EXPECTED_ACTIONS)} 个 action`);
   check('④ 端到端：工具拿到真后端数据', code === 0 && hasRealData, `${toolResult.slice(0, 160)}（exit=${code}）`);
 
   // ④' 卡片的数据通道：工具侧 presentationMeta 必须**原样落到会话日志的 tool/result.meta**（卡片读它）
@@ -918,7 +951,7 @@ async function checkDsh() {
   const healthMeta = metaScan.records.find((r) => r.type === 'tool/result' && r.data?.meta?.kind === 'health')?.data?.meta ?? null;
   check(
     "④' presentationMeta 落进 tool/result.meta（卡片的数据来源）",
-    metaScan.skipped || (Boolean(healthMeta) && healthMeta.actions === 63 && healthMeta.apiRev === 2),
+    metaScan.skipped || (Boolean(healthMeta) && healthMeta.actions === EXPECTED_ACTIONS && healthMeta.apiRev === 2),
     metaScan.skipped ? '当前 Node 没有内置 zstd 解压 → 本项跳过（⑨ 有同通道断言）' : JSON.stringify(healthMeta),
   );
 

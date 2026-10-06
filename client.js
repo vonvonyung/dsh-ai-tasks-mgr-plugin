@@ -90,6 +90,18 @@ window.__ModuleLoader__.load({
       'board.col.review': '待验收',
       'board.col.blocked': '受阻',
       'board.col.done': '已完成',
+      // 验收（M3：原生看板里也能验收；写工具 aitm_task_accept 的卡片文案同源）
+      'board.accept': '验收并合并',
+      'board.acceptOnly': '只记验收',
+      'board.acceptAgain': '重新核对（已合并）',
+      'board.acceptAck': '验证没过也要合',
+      'board.accepting': '验收中…',
+      'board.verifyOk': '验证通过',
+      'board.verifyFail': '验证没过',
+      'board.couldNotAccept': '没验收成：{msg}',
+      'card.accept.merged': '已合并',
+      'card.accept.recorded': '已记验收（未合并）',
+      'card.accept.needsAck': '验证没过 —— 要人勾「验证没过也要合」才能继续',
     };
     const en = {
       'card.openPanel': 'Open in panel',
@@ -150,6 +162,17 @@ window.__ModuleLoader__.load({
       'board.col.review': 'Review',
       'board.col.blocked': 'Blocked',
       'board.col.done': 'Done',
+      'board.accept': 'Accept & merge',
+      'board.acceptOnly': 'Record only',
+      'board.acceptAgain': 'Re-check (already merged)',
+      'board.acceptAck': 'Merge despite failed verify',
+      'board.accepting': 'Accepting…',
+      'board.verifyOk': 'verify passed',
+      'board.verifyFail': 'verify failed',
+      'board.couldNotAccept': 'Not accepted: {msg}',
+      'card.accept.merged': 'Merged',
+      'card.accept.recorded': 'Recorded (not merged)',
+      'card.accept.needsAck': 'Verify failed — needs a human to tick "merge anyway"',
     };
 
     /** 状态徽章配色（跟着 DSH 的语义色走，取不到就退回我们自己的） */
@@ -558,9 +581,35 @@ window.__ModuleLoader__.load({
           return ReposCard({ meta, t });
         case 'backup':
           return BackupCard({ meta, t });
+        case 'accept':
+          return AcceptCard({ meta, t });
         default:
           return FallbackCard({ text, toolName, t });
       }
+    }
+
+    /**
+     * 验收卡（aitm_task_accept）：合并了 / 只记验收 / 验证没过被拦下，三种都要一眼看清。
+     * 具体原因（「主区脏」「冲突」「验证没过」）走 detail —— 内核原话，别改写成「失败了」。
+     */
+    function AcceptCard({ meta, t }) {
+      const merged = meta.merged !== false;
+      const vd = meta.verify && typeof meta.verify === 'object' ? meta.verify : null;
+      return jsx.jsx(Card, {
+        t,
+        icon: 'IconCheckCircleOutlineRegular',
+        title: String(meta.ideaTitle ?? meta.taskId ?? t('board.accept')),
+        accent: true,
+        children: jsx.jsxs('div', { children: [
+          jsx.jsxs('div', { style: T.sub, children: [
+            jsx.jsx('span', { style: T.chip(null), children: merged ? t('card.accept.merged') : t('card.accept.recorded') }, 'k'),
+            meta.baseRef ? jsx.jsx('span', { style: { opacity: 0.75 }, children: `→ ${String(meta.baseRef)}` }, 'base') : null,
+            vd ? jsx.jsx('span', { style: T.chip(vd.ok ? null : '#f2b03d'), children: vd.ok ? t('board.verifyOk') : t('board.verifyFail') }, 'v') : null,
+          ] }, 'sub'),
+          vd && !vd.ok && vd.note ? jsx.jsx('div', { style: { ...T.sub, color: '#d1242f' }, children: String(vd.note).slice(0, 200) }, 'vnote') : null,
+          meta.detail ? jsx.jsx('div', { style: { ...T.sub, opacity: 0.85 }, children: String(meta.detail).slice(0, 240) }, 'detail') : null,
+        ] }, 'body'),
+      });
     }
 
     /** 我们注册了工具卡的工具名（keyed 槽的 key） */
@@ -576,6 +625,7 @@ window.__ModuleLoader__.load({
       'aitm_calendar_day',
       'aitm_repo_status',
       'aitm_backup_now',
+      'aitm_task_accept',
     ];
 
 
@@ -670,13 +720,14 @@ window.__ModuleLoader__.load({
 
     /** 小卡片（纯展示）：标题 / 正文一行 / 优先级 / 标签 / 任务数 / 仓库 / 相对时间 */
     function BoardCard(props) {
-      const { idea, repo, taskCount, running, selected, onOpen, onStar, onDragStart, onDragEnd, t } = props;
+      const { idea, repo, taskCount, running, verifyFailed, selected, onOpen, onStar, onDragStart, onDragEnd, t } = props;
       const pri = priText(idea.priority);
       const meta = [
         pri ? jsx.jsx('span', { children: pri }, 'pri') : null,
         ...(idea.tags ?? []).slice(0, 2).map((tag) => jsx.jsx('span', { children: `#${String(tag)}` }, String(tag))),
         jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
         taskCount ? jsx.jsx('span', { style: { color: running ? 'var(--dsh-color-accent, #4a8cff)' : undefined }, children: `⌘ ${String(taskCount)}` }, 'tasks') : null,
+        verifyFailed ? jsx.jsx('span', { style: { color: 'var(--dsh-color-danger, #d35)' }, title: t('board.verifyFail'), children: '✗ 验证' }, 'v') : null,
         repo ? jsx.jsx('span', { children: repo }, 'repo') : null,
         jsx.jsx('span', { children: relTime(idea.updatedAt) }, 'time'),
       ].filter(Boolean);
@@ -756,6 +807,10 @@ window.__ModuleLoader__.load({
                       repo: repoName(idea.repoId),
                       taskCount: tasks.filter((x) => x.ideaId === idea.id).length,
                       running: tasks.some((x) => x.ideaId === idea.id && (x.status === 'running' || x.status === 'queued')),
+                      // 验证没过（且任务还没被验收/丢弃）→ 卡片上打一个 ✗ 验证
+                      verifyFailed: tasks.some(
+                        (x) => x.ideaId === idea.id && x.verify && x.verify.ok === false && x.status !== 'succeeded' && x.status !== 'cancelled',
+                      ),
                       selected: selected === idea.id,
                       onOpen,
                       onStar,
@@ -786,6 +841,9 @@ window.__ModuleLoader__.load({
       const [data, setData] = react.useState({ loading: true, ideas: [], overview: null, repos: [], tasks: [], error: null });
       const [detail, setDetail] = react.useState(null); // {loading, id, meta?, error?}
       const [note, setNote] = react.useState(null);
+      const [accepting, setAccepting] = react.useState(false);
+      const [acceptNote, setAcceptNote] = react.useState(null);
+      const [ackFail, setAckFail] = react.useState(false); // 「验证没过也要合」
       const qRef = react.useRef(q);
       qRef.current = q;
       const loadRef = react.useRef(null); // 给事件流用：不进依赖，免得一改筛选就重连
@@ -891,6 +949,41 @@ window.__ModuleLoader__.load({
         }
       };
 
+      /**
+       * 验收（原生看板里的那两颗按钮）。
+       *
+       * 与完整面板同一口径：默认合并回基线；`task.accept` 回 `{ok:false, detail}` 说明被门拦下
+       * （验证没过 / 主区脏 / 冲突）—— 原话显示，并在「验证没过」时亮出勾选框。
+       * 「人在界面上点」本身就是人工审批，所以这里不再弹审批卡（对话里的 aitm_task_accept 才会弹）。
+       */
+      const acceptTask = async (merge) => {
+        const taskId = detail?.meta?.tasks?.[0]?.id;
+        if (!taskId || accepting) return;
+        setAccepting(true);
+        setAcceptNote(null);
+        try {
+          const r = await postAction(base, 'task.accept', {
+            taskId,
+            merge,
+            ...(merge && ackFail ? { acknowledgeVerifyFailure: true } : {}),
+          });
+          const text = String(r?.detail ?? '');
+          if (r?.ok === false) {
+            setAcceptNote(t('board.couldNotAccept', { msg: text || '?' }));
+            if (/验证没过/.test(text)) setAckFail(false); // 让人显式再勾一次
+          } else {
+            setAcceptNote(text);
+            setAckFail(false);
+            await openDetail(detail.id);
+            await load();
+          }
+        } catch (err) {
+          setAcceptNote(t('board.couldNotAccept', { msg: String(err?.message ?? err) }));
+        } finally {
+          setAccepting(false);
+        }
+      };
+
       const toggleStar = async (id) => {
         try {
           await postAction(base, 'idea.toggleStar', id);
@@ -901,12 +994,42 @@ window.__ModuleLoader__.load({
       };
 
       if (detail) {
+        const newest = detail.meta?.tasks?.[0] ?? null;
+        const verify = newest?.verify ?? null;
+        const merged = Boolean(newest?.mergedAt);
+        const acceptBar = newest
+          ? jsx.jsxs('div', { style: { ...BOARD.toolbar, alignItems: 'center' }, 'data-board-accept': '1', children: [
+              jsx.jsx('button', {
+                type: 'button',
+                style: { ...BOARD.select, cursor: accepting ? 'progress' : 'pointer' },
+                disabled: accepting,
+                onClick: () => void acceptTask(true),
+                children: accepting ? t('board.accepting') : merged ? t('board.acceptAgain') : t('board.accept'),
+              }, 'accept'),
+              jsx.jsx('a', { style: BOARD.link, onClick: () => void acceptTask(false), children: t('board.acceptOnly') }, 'only'),
+              verify
+                ? jsx.jsx('span', {
+                    style: { color: verify.ok ? undefined : 'var(--dsh-color-danger, #d35)', opacity: verify.ok ? 0.7 : 1 },
+                    title: String(verify.note ?? ''),
+                    children: verify.ok ? t('board.verifyOk') : t('board.verifyFail'),
+                  }, 'v')
+                : null,
+              verify && !verify.ok
+                ? jsx.jsxs('label', { style: { display: 'flex', alignItems: 'center', gap: 3, marginLeft: 'auto', fontSize: 11.5 }, children: [
+                    jsx.jsx('input', { type: 'checkbox', checked: ackFail, onChange: (e) => setAckFail(e.target.checked) }, 'cb'),
+                    t('board.acceptAck'),
+                  ] }, 'ack')
+                : null,
+            ] }, 'acceptbar')
+          : null;
         return jsx.jsxs('div', { style: BOARD.wrap, 'data-board': 'detail', children: [
           jsx.jsxs('div', { style: BOARD.toolbar, children: [
             jsx.jsx('a', { style: BOARD.link, onClick: () => setDetail(null), children: t('board.back') }, 'back'),
             jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
             onOpenFull ? jsx.jsx('a', { style: BOARD.link, onClick: () => onOpenFull(detail.id), children: t('board.openFull') }, 'full') : null,
           ] }, 'bar'),
+          acceptBar,
+          acceptNote ? jsx.jsx('div', { style: { padding: '4px 10px', fontSize: 11.5, opacity: 0.9 }, 'data-board-accept-note': '1', children: acceptNote }, 'anote') : null,
           detail.loading
             ? jsx.jsx('div', { style: { padding: 14, opacity: 0.8 }, children: t('board.detailLoading') }, 'loading')
             : detail.error
@@ -986,7 +1109,14 @@ window.__ModuleLoader__.load({
         description: idea.description ?? '',
         spec: idea.spec ? String(idea.spec) : null,
         repo: d?.repo?.name ?? null,
-        tasks: (d?.tasks ?? []).slice(0, 8).map((x) => ({ id: x.id, status: x.status, turns: x.turns ?? 0 })),
+        tasks: (d?.tasks ?? []).slice(0, 8).map((x) => ({
+          id: x.id,
+          status: x.status,
+          turns: x.turns ?? 0,
+          ...(x.verify ? { verify: { ok: x.verify.ok === true, note: String(x.verify.note ?? '') } } : {}),
+          ...(x.workspace?.mergedAt ? { mergedAt: x.workspace.mergedAt } : {}),
+          ...(x.workspace?.baseRef ? { baseRef: x.workspace.baseRef } : {}),
+        })),
       };
     }
 

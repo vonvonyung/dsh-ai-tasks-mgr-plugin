@@ -10,7 +10,7 @@
  *   ② 解包 → **手工搭一个 profile**（等价于 pnpm 装完之后的样子：依赖在 node_modules 里 + bundle 已选）
  *   ③ 起 `dsh --profile <t> web`：**不设 AITM_REPO**，cwd 也不是仓库 —— 逼插件走「自带内核」分支
  *   ④ 断言：激活无 warning / 客户端半边进 boot 图 / `/aitm-plugin/config` 报 `mode=vendor` 且身份对得上
- *      （apiRev=2、63 个 action、数据目录 = 我们指定的 AI_TASKS_HOME）/ 面板静态产物真的能取到
+ *      （apiRev=2、action 数取自内核源码、数据目录 = 我们指定的 AI_TASKS_HOME）/ 面板静态产物真的能取到
  *   ⑤ 再用假模型跑一次 `dsh headless`：工具拿到的是真内核数据（证明自带内核真在跑）
  *   ⑥ 有 pnpm 时，额外把 `dsh plugin add <tarball>` 这条**真命令**跑一遍，看它有没有把依赖与 bundle 写进 profile
  *
@@ -26,6 +26,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { expectedActions } from './expected-actions.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = path.resolve(ROOT, '..');
@@ -205,9 +207,10 @@ async function main() {
     cfg.mode === 'vendor' && !cfg.error && cfg.vendorL3 === true,
     `mode=${String(cfg.mode)} error=${String(cfg.error ?? '无')} repoProblem=${String(cfg.repoProblem ?? '无').slice(0, 60)}`,
   );
+  const expected = expectedActions(REPO, 63); // 从内核源码推导（见 expected-actions.mjs）
   check(
-    '身份核对：apiRev=2 / 63 个 action / 数据目录 = AI_TASKS_HOME',
-    cfg.identity?.apiRev === 2 && cfg.identity?.actions === 63 && cfg.identity?.dataDir === dataHome,
+    `身份核对：apiRev=2 / ${String(expected)} 个 action / 数据目录 = AI_TASKS_HOME`,
+    cfg.identity?.apiRev === 2 && cfg.identity?.actions === expected && cfg.identity?.dataDir === dataHome,
     JSON.stringify({ apiRev: cfg.identity?.apiRev, actions: cfg.identity?.actions, dataDir: cfg.identity?.dataDir }),
   );
 
@@ -271,7 +274,7 @@ async function main() {
   });
   const code = await new Promise((resolve) => headless.on('exit', resolve));
   const toolResult = /"type":"tool_result"[^\n]*/.exec(headless.out)?.[0] ?? '';
-  const vendorReady = new RegExp(`63 个 action[^"]*`).test(toolResult) && toolResult.includes('apiRev=2');
+  const vendorReady = toolResult.includes(`${String(expected)} 个 action`) && toolResult.includes('apiRev=2');
   if (!vendorReady && process.env.AITM_DEBUG) console.log('---- headless 原始输出 ----\n' + headless.out.slice(-3000));
   check('工具拿到真内核数据（headless，exit=0）', code === 0 && vendorReady, `${toolResult.slice(0, 170)}（exit=${String(code)}）`);
 
@@ -321,7 +324,7 @@ async function main() {
       const dup = fs.existsSync(path.join(home2, 'profiles', 'web', 'node_modules', '@deepseek-ai', 'dsh-tools'));
       check(
         '用 pnpm 装出来的 profile 跑得通工具（headless，exit=0）',
-        installedHeadless.status === 0 && h2.status === 0 && /63 个 action/.test(h2.stdout ?? ''),
+        installedHeadless.status === 0 && h2.status === 0 && (h2.stdout ?? '').includes(`${String(expected)} 个 action`),
         `add=${String(installedHeadless.status)} headless=${String(h2.status)} 第二份 dsh-tools=${dup ? '有（会打坏工具执行！）' : '没有'}`,
       );
     }

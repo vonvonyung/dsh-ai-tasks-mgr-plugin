@@ -105,6 +105,22 @@ const WRITE_TOOLS = {
   aitm_idea_set_status: (a) => `把想法 ${String(a?.id ?? '(缺 id)')} 的状态改成 ${String(a?.status ?? '(缺状态)')}`,
   aitm_task_start: (a) => `开工：${String(a?.ideaId ?? '(缺想法)')} → 起一个 AI 任务（建 worktree、跑 CLI）`,
   aitm_backup_now: (a) => `立即备份（${a?.mode === 'full' ? '全量' : '轻量'}）`,
+  // 这条是异步的：合并是不可逆动作，审批卡上必须写清「哪条想法、合到哪个基线」，
+  // 光给个 taskId 人没法确认（查不到标题就退回 id，绝不因为查不到而卡住审批）
+  aitm_task_accept: async (a) => {
+    const id = String(a?.taskId ?? '(缺任务)');
+    let title = null;
+    let baseRef = null;
+    try {
+      const d = await call('task.get', id);
+      title = d?.idea?.title ?? d?.task?.title ?? null;
+      baseRef = d?.task?.workspace?.baseRef ?? null;
+    } catch {
+      /* 查不到就用 id */
+    }
+    const what = a?.merge === false ? '只记验收（不碰 git）' : `验收并合并到 ${baseRef ? `\`${baseRef}\`` : '基线'}`;
+    return `${what}：${title ? `《${title}》` : ''}任务 ${id}${a?.acknowledgeVerifyFailure ? '（**验证没过也要合**）' : ''}`;
+  },
 };
 
 /**
@@ -791,6 +807,34 @@ const schemaRepos = {
   },
 };
 
+/** 验收 / 合并（aitm_task_accept） */
+const schemaAccept = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+    accepted: { type: 'boolean' },
+    merged: { type: 'boolean' },
+    needsAcknowledge: { type: 'boolean' },
+    taskId: { type: 'string' },
+    ideaTitle: { type: 'string' },
+    baseRef: { type: 'string' },
+    detail: { type: 'string' },
+    verify: { type: 'object', additionalProperties: true },
+  },
+};
+
+/** 验证记录压成卡片能显示的几项（null 一律不写：宿主 schema 过不了 null） */
+const pickVerify = (v) =>
+  v && typeof v === 'object'
+    ? {
+        ok: v.ok === true,
+        ...(typeof v.note === 'string' ? { note: v.note } : {}),
+        ...(typeof v.at === 'number' ? { at: v.at } : {}),
+      }
+    : null;
+
 /** 备份（aitm_backup_now） */
 const schemaBackup = {
   type: 'object',
@@ -1196,7 +1240,7 @@ export function apply(ctx) {
     defineTool({
       name: 'aitm_task_status',
       description:
-        '看任务进度：给 taskId 看单个（状态/轮次/用量/改动摘要/报错），不给就列出任务（可按 ideaId 或 status 过滤）。',
+        '看任务进度：给 taskId 看单个（状态/轮次/用量/改动摘要/报错/验证结果），不给就列出任务（可按 ideaId 或 status 过滤）。',
       parameters: {
         taskId: { type: 'string', description: '任务 id（省略则列任务）。' },
         ideaId: { type: 'string', description: '只看某条想法的任务。' },
@@ -1215,7 +1259,9 @@ export function apply(ctx) {
           if (v.ok === false) return [{ type: 'text', text: `查不到：${v.error}` }];
           if (!v.items) {
             const t = v.task ?? {};
-            return [{ type: 'text', text: `${t.title ?? t.id}｜状态 ${t.status}｜第 ${t.turns ?? 0} 轮${t.diffStat ? `｜改动 ${t.diffStat.files ?? '?'} 个文件` : ''}${t.error ? `｜错误：${t.error}` : ''}` }];
+            const vd = t.verify;
+            const verifyNote = vd ? `｜验证${vd.ok ? '通过' : `没过（${String(vd.note ?? '').slice(0, 60)}）`}` : '';
+            return [{ type: 'text', text: `${t.title ?? t.id}｜状态 ${t.status}｜第 ${t.turns ?? 0} 轮${t.diffStat ? `｜改动 ${t.diffStat.files ?? '?'} 个文件` : ''}${verifyNote}${t.error ? `｜错误：${t.error}` : ''}` }];
           }
           return [{ type: 'text', text: v.items.length ? v.items.map((t) => `- [${t.status}] ${t.title ?? t.id}${t.ideaTitle ? `（想法：${t.ideaTitle}）` : ''}`).join('\n') : '（没有任务）' }];
         },
@@ -1240,6 +1286,9 @@ export function apply(ctx) {
                 diffStat: t.diffStat ?? null,
                 commits: (t.commits ?? []).length,
                 usage: t.usage ?? null,
+                // 验收门的依据：跑完那一刻的验证结果（含当时的 HEAD / 基线提交）
+                verify: t.verify ?? null,
+                mergedAt: t.workspace?.mergedAt ?? null,
                 error: t.error ?? null,
               },
             };
@@ -1261,6 +1310,105 @@ export function apply(ctx) {
           };
         } catch (err) {
           return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  /*
+   * 验收 / 合并（12 号工具）。
+   *
+   * 为什么也要做成工具：桌面面板要开 iframe 才能验收，而主壳是 DSH ——
+   * 但「合并」是人拍板的动作，所以它走 `tools/pre-execute` 审批闸（审批卡上写清
+   * 「把《标题》合并到 <基线>」），并且**验证没过时默认拒绝**，要人显式勾
+   * acknowledgeVerifyFailure 才放行（与完整面板那个勾选框同一口径）。
+   */
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_task_accept',
+      description:
+        '验收一个任务：默认把它的分支合并回基线（写操作，需要用户审批；合并前按基线/HEAD 是否变化决定复用还是重跑验证命令）。merge=false 只记验收、不碰 git。验证没过会被拒绝，除非显式 acknowledgeVerifyFailure=true。',
+      parameters: {
+        taskId: { type: 'string', description: '任务 id（可先用 aitm_task_status 查）。', required: true },
+        merge: { type: 'boolean', description: '默认 true = 合并到基线；false = 只记验收（不改 git）。' },
+        acknowledgeVerifyFailure: { type: 'boolean', description: '验证没过时是否仍要合并（默认 false = 拒绝，让用户先去处理）。' },
+        cleanup: { type: 'boolean', description: '合并后顺手清理 worktree 与已合并的分支（默认 false = 留着现场）。' },
+      },
+      presentCall: (a) => ({
+        card: 'generic',
+        title: `AI 任务台 · 验收：${String(a?.taskId ?? '?')}${a?.merge === false ? '（只记验收）' : ''}`,
+        kind: 'edit',
+      }),
+      output: {
+        schema: schemaAccept,
+        presentationMeta: (_a, v) =>
+          v?.ok === false
+            ? { kind: 'accept', ok: false, error: v?.error ?? '未知错误', needsAcknowledge: v?.needsAcknowledge === true, taskId: v?.taskId ?? null, ideaTitle: v?.ideaTitle ?? null }
+            : {
+                kind: 'accept',
+                accepted: true,
+                merged: v?.merged !== false,
+                taskId: v?.taskId ?? null,
+                ideaTitle: v?.ideaTitle ?? null,
+                baseRef: v?.baseRef ?? null,
+                detail: v?.detail ?? null,
+                verify: pickVerify(v?.verify),
+              },
+        render: (_a, v) => [
+          {
+            type: 'text',
+            text:
+              v?.ok === false
+                ? `没验收：${v?.error ?? '未知错误'}`
+                : v?.merged === false
+                  ? `已标记验收（未合并）：${v?.detail ?? ''}`
+                  : `已合并到 ${v?.baseRef ?? '基线'}：${v?.detail ?? ''}`,
+          },
+        ],
+      },
+      async execute(args) {
+        const taskId = String(args.taskId ?? '').trim();
+        if (!taskId) return { ok: false, error: 'taskId 必填', taskId: '(缺)' };
+        const merge = args.merge !== false;
+        // 只为卡片/审批卡多带一个标题；查不到不影响动作本身
+        let info = null;
+        try {
+          info = await call('task.get', taskId);
+        } catch {
+          /* 任务不存在时下面的 accept 会给出干净的错误 */
+        }
+        const ideaTitle = info?.idea?.title ?? null;
+        const baseRef = info?.task?.workspace?.baseRef ?? null;
+        try {
+          const r = await call('task.accept', {
+            taskId,
+            merge,
+            ...(args.acknowledgeVerifyFailure === true ? { acknowledgeVerifyFailure: true } : {}),
+            ...(args.cleanup === true ? { cleanup: true } : {}),
+          });
+          if (r?.ok === false) {
+            // 门（验证没过 / 主区脏 / 冲突）—— 把内核原话给出去，并告诉模型「该让人勾一下」
+            const detail = String(r.detail ?? '');
+            return {
+              ok: false,
+              error: detail || '验收没成功',
+              needsAcknowledge: /验证没过|acknowledge|勾上/.test(detail),
+              taskId,
+              ...(ideaTitle ? { ideaTitle } : {}),
+            };
+          }
+          return {
+            ok: true,
+            accepted: true,
+            merged: merge,
+            taskId,
+            ...(ideaTitle ? { ideaTitle } : {}),
+            ...(baseRef ? { baseRef } : {}),
+            detail: String(r?.detail ?? ''),
+            ...(pickVerify(info?.task?.verify) ? { verify: pickVerify(info.task.verify) } : {}),
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err), taskId, ...(ideaTitle ? { ideaTitle } : {}) };
         }
       },
     }),
@@ -1480,6 +1628,9 @@ export function apply(ctx) {
         if (exec.name === 'aitm_task_start' && (!String(a.ideaId ?? '').trim() || !String(a.instruction ?? '').trim())) {
           return { kind: 'deny', reason: 'aitm: aitm_task_start 缺 ideaId 或 instruction' };
         }
+        if (exec.name === 'aitm_task_accept' && !String(a.taskId ?? '').trim()) {
+          return { kind: 'deny', reason: 'aitm: aitm_task_accept 缺 taskId' };
+        }
         if (exec.name === 'aitm_backup_now' && a.mode !== undefined && !['lean', 'full'].includes(String(a.mode))) {
           return { kind: 'deny', reason: `aitm: aitm_backup_now 的 mode 只能是 lean 或 full（收到「${String(a.mode)}」）` };
         }
@@ -1487,7 +1638,7 @@ export function apply(ctx) {
         const downstream = await next();
         if (downstream.kind !== 'allow') return downstream;
         if (DEFAULTS.approve === 'allow') return downstream; // 显式关掉审批（AITM_APPROVE=allow）
-        const detail = describe(a);
+        const detail = await describe(a); // 允许异步（accept 要查标题）
         return {
           kind: 'ask',
           reason: `AI 任务台写操作：${detail}（仓库 ${DEFAULTS.repo}）`,
