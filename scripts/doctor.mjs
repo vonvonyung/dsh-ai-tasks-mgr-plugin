@@ -17,6 +17,8 @@
  * 退出码：0 = 后端可用；1 = 起不来（原因都打印了）
  */
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const ok = (s) => console.log(`  ✓ ${s}`);
 const bad = (s) => console.log(`  ✗ ${s}`);
@@ -133,6 +135,47 @@ if ((h.apiRev ?? 1) < cfg.apiRevRequired) {
   process.exit(1);
 }
 ok('版本匹配，插件会用它');
+
+/* ---- ④ DSH profile 体检（「装不上插件」时最常见的其实不是我们的包） ---- */
+// 场景（2026-10-06 同事机实测）：profile 里早先装过另一个插件，那条依赖是**本机某个 tarball 的绝对路径**
+//（`file:D:/Hugo/Documents/…/postpilot-….tgz`）。文件一旦不在（换机器 / 那个项目被清掉），
+// 之后在这个 profile 里跑**任何** `pnpm add`（包括装我们的插件）都会先解析整张锁文件 → ENOENT → 整次安装失败。
+// 这不是我们的包的问题，但报错里只有别人家的 tgz 名字，很容易看成一团乱麻 —— 所以在这里点名。
+const dshHome = process.env.DSH_HOME?.trim() ? path.resolve(process.env.DSH_HOME.trim()) : path.join(os.homedir(), '.dsh');
+const profilesDir = path.join(dshHome, 'profiles');
+const isLocalDep = (v) => /^(file:|link:|portal:)/.test(v) || /\.(tgz|tar\.gz)$/i.test(v) || /^[A-Za-z]:[\\/]/.test(v) || v.startsWith('/');
+const profileBroken = [];
+try {
+  for (const name of fs.readdirSync(profilesDir)) {
+    const pj = path.join(profilesDir, name, 'package.json');
+    let deps;
+    try {
+      deps = { ...JSON.parse(fs.readFileSync(pj, 'utf8')).dependencies };
+    } catch {
+      continue; // 没装过东西 / 文件坏了，跳过
+    }
+    for (const [dep, ver] of Object.entries(deps)) {
+      if (typeof ver !== 'string' || !isLocalDep(ver)) continue;
+      const raw = ver.replace(/^(file:|link:|portal:)/, '');
+      // 盘符路径也要按绝对路径认（`D:/…` 在 WSL/Linux 上 path.isAbsolute 会说不绝对，那是我们看别人机器时）
+      const abs = path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw) ? raw : path.resolve(path.dirname(pj), raw);
+      if (!fs.existsSync(abs)) profileBroken.push({ profile: name, dep, ver, abs });
+    }
+  }
+} catch {
+  /* 没有 profiles 目录：DSH 还没装过插件 */
+}
+if (profileBroken.length) {
+  bad(`profile 里有 ${profileBroken.length} 条坏依赖（本地 tarball 已经不在了）——装任何插件都会失败，与我们的包无关`);
+  for (const b of profileBroken) info(`profile ${b.profile}：${b.dep} → ${b.abs}（文件不存在）`);
+  info('修法（挑一条）：');
+  info('  ① 把那个 tarball 放回上面的路径（在造它的那台机器/项目里重新 bundle 一份）；');
+  info('  ② 不需要它了就从 profile 里删掉：cd <上面那个 profile 目录> && pnpm remove <包名>');
+  info('     （若 pnpm remove 也报同一个 ENOENT：手工删 package.json 里那一行 + pnpm-lock.yaml 里同名段落，再 pnpm install）；');
+  info('  ③ 或者换一个干净 profile 装我们：npx -y @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile <新名字> add <tarball>。');
+} else {
+  info(`DSH profile 体检：${profilesDir} 下没有坏依赖（装插件不会被别人的残留挡住）`);
+}
 
 /* ---- 收尾：把自己起的后端收掉，不留孤儿 ---- */
 await host.stop?.();

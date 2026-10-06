@@ -1,6 +1,6 @@
 # dsh-plugin-aitm · AI 任务台 × DeepSeek Harness 插件
 
-把 AI 任务台接进 DSH 客户端的最小插件（**工具面 11 个：想法 → 规格 → 任务 → 备份**）。
+把 AI 任务台接进 DSH 客户端的最小插件（**工具面 12 个：想法 → 规格 → 任务 → 验收 → 备份**）。
 
 ```
 ┌─ DSH 客户端 ───────────────────────────────────────────┐
@@ -61,6 +61,7 @@
    ```bash
    npm i -g pnpm                       # dsh plugin 走 pnpm（DSH Desktop 自带，CLI 要自己装）
    npx -y @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add <tarball 绝对路径>
+   # DSH Desktop 里装：同一台机器上点「安装插件」选这个 tarball，它写的是 --profile desktop
    npx -y @deepseek-ai/dsh@0.2.0-rc.2 web --port 3081
    ```
 
@@ -76,6 +77,24 @@
 
    `--profile web` 是**给 web app 用**的 profile；DSH Desktop 用的是保留名 `desktop`（同样一条 `add`，
    把 `--profile web` 换成 `--profile desktop`）。
+
+4. **装不上时先看这条**（2026-10-06 同事机实测）：pnpm 报的 `ENOENT` 里如果是**别人家的 tgz**
+   （例：`D:\Hugo\Documents\dsh-my-postiz\bundle\postpilot-…-0.11.0.tgz`），**那不是我们的包的问题**——
+   是那个 profile 里早先装过的插件留了一条「本地 tarball 绝对路径」依赖，而文件已经不在这台机器上
+   （换机器 / 那个项目被清掉）。`pnpm add` 要先解析整张锁文件，所以在这个 profile 里装**任何**插件都会失败。
+   挑一条修：
+
+   ```powershell
+   # ① 把那个 tarball 放回原路径（在造它的机器/项目里重新 bundle 一份）；或
+   # ② 不需要它了，就从 profile 里删掉：
+   cd C:\Users\<你>\.dsh\profiles\<profile>     # 例：profiles\desktop
+   pnpm remove <包名>                              # 包名 = package.json dependencies 里的键
+   #    若 pnpm remove 也报同一个 ENOENT：手工删 package.json 里那一行 + pnpm-lock.yaml 里同名段落，再 pnpm install
+   # ③ 或者换个干净 profile 装我们（DSH Desktop 之外用）：
+   npx -y @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile aitm add <tarball>
+   ```
+
+   `node scripts/doctor.mjs` 的第 ④ 节会把这种坏依赖**直接点名**（哪个 profile、哪个包、缺哪个文件）。
 
 > 为什么插件里能自带内核：`scripts/vendor-plugin.mjs` 把仓库构建出的 `dist-server/l3.mjs`（只这一个文件，
 > `web.mjs`/`seed.mjs` 是 CLI 入口、插件用不上）与 `dist/` 拷进 `dsh-plugin/`（两边都在 `.gitignore` 里，
