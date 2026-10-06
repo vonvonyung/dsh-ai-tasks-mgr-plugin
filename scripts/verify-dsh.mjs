@@ -486,7 +486,7 @@ async function checkTools() {
       ['aitm_calendar_day', { day: '2020-01-01' }, (v) => v.ideas.length === 0],
       ['aitm_task_status', {}, (v) => Array.isArray(v.items)],
       ['aitm_repo_status', {}, (v) => Array.isArray(v.repos)],
-      // 写工具本体也能单独跑（审批闸是**另一层**，⑬ 单独验）：这里只证明它写得出东西
+      // 写工具本体也能单独跑（审批闸是**另一层**，⑦ 单独验）：这里只证明它写得出东西
       ['aitm_backup_now', { mode: 'lean', label: 'L4 验证' }, (v) => v.ok === true && v.files >= 1 && v.mode === 'lean'],
       // 负例：不存在的想法要**优雅报错**（不抛到宿主）
       ['aitm_idea_get', { id: 'i_不存在' }, (v) => v.ok === false && /不存在/.test(String(v.error))],
@@ -523,6 +523,52 @@ async function checkTools() {
     // 备份确实落了盘（不是只回了个对象）
     const backups = fs.existsSync(path.join(home, 'backups')) || fs.existsSync(path.join(home, 'data'));
     check('aitm_backup_now 的产物在数据目录里', backups, home);
+
+    /* ---- 原生日历的取数通道：把 client.js 里的 postAction 拿到**真 L3** 上跑一遍 ----
+       日历在 DSH 的浏览器环境里是**跨源**（DSH 页面 127.0.0.1:3081 → 插件的回环端口），
+       走的是 POST + JSON ⇒ 浏览器会先发 OPTIONS 预检。这条断言把「预检有没有、CORS 头、
+       信封形状」一次钉住（离线渲染测不到网络这半段）。 */
+    let clientLoaded = null;
+    globalThis.window = { __ModuleLoader__: { load({ id, factory }) { clientLoaded = { id, exports: factory(require) }; } } };
+    await import(`${pathToFileURL(path.join(ROOT, 'client.js')).href}?calendar=${String(Date.now())}`);
+    const post = clientLoaded?.exports?.__calendarHelpers?.postAction;
+    check('原生日历的取数通道（client.js 的 postAction）在', typeof post === 'function');
+    if (typeof post === 'function') {
+      const base = await host.ensureBase();
+      const list = await post(base, 'idea.list', { q: 'L4 工具验收' });
+      const feed = await post(base, 'feed.get', { refresh: false });
+      const ideas = Array.isArray(list) ? list : list?.ideas;
+      check(
+        '日历取数：idea.list 拿到两条 + feed.get 拿到快照',
+        (ideas?.length ?? -1) === 2 && Boolean(feed) && typeof feed === 'object',
+        `ideas=${String(ideas?.length)} feed=${Object.keys(feed ?? {}).join(',') || '(空)'}`,
+      );
+      let threw = null;
+      try {
+        await post(base, 'no.such.action', {});
+      } catch (err) {
+        threw = err;
+      }
+      check(
+        '日历取数：后端报错时**抛出来**（面板写红字，不是一直转圈）',
+        Boolean(threw) && !/undefined/.test(String(threw?.message ?? threw)),
+        String(threw?.message ?? threw).slice(0, 60),
+      );
+      // 浏览器跨源 POST（JSON）会先发 OPTIONS 预检：没有 CORS 头，真机上就只会转圈
+      const pre = await new Promise((resolve) => {
+        const req = http.request(`${base}/api/idea.list`, { method: 'OPTIONS' }, (res) => {
+          resolve({ code: res.statusCode ?? 0, headers: res.headers });
+          res.resume();
+        });
+        req.on('error', (err) => resolve({ code: 0, headers: {}, error: String(err?.message ?? err) }));
+        req.end();
+      });
+      check(
+        '原生日历的跨源预检（OPTIONS）带 CORS 头',
+        pre.code === 204 && pre.headers['access-control-allow-origin'] === '*' && String(pre.headers['access-control-allow-headers'] ?? '').includes('content-type'),
+        `HTTP ${String(pre.code)} · allow-headers=${String(pre.headers['access-control-allow-headers'] ?? '(无)')}`,
+      );
+    }
   } finally {
     await host?.stop?.().catch?.(() => undefined);
     if (savedHome === undefined) delete process.env.AI_TASKS_HOME;

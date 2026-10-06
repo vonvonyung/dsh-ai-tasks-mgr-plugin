@@ -1018,7 +1018,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject;
     exports.__components = { AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
-    exports.__calendarHelpers = { monthGridDays, shiftMonth, dayKeyLocal, groupByDayLocal, monthLabel, dayLabel };
+    exports.__calendarHelpers = { monthGridDays, shiftMonth, dayKeyLocal, groupByDayLocal, monthLabel, dayLabel, postAction };
     /** 给 verify 用：客户端半边依赖的服务名（每个都必须有提供者，否则整块 pending → 白屏） */
     exports.__clientInject = [...inject];
     /** 给 verify 用：卡片注册了哪些工具名 */

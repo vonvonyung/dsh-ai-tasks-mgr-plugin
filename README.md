@@ -95,7 +95,7 @@
 ## 验证
 
 ```bash
-node scripts/verify-dsh.mjs     # 57 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
+node scripts/verify-dsh.mjs     # 61 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
                                 #        （11 种卡片 + 注册 / 文案 + 失败 / 运行 / 兜底 / 异常块 + 两条日历网格）
                                 #        + 旧后端护栏 + 起前自检
                                 #        + 审批闸（写→ask / 只读→放行 / 缺参→deny / 下游优先 / 取消）
@@ -103,6 +103,7 @@ node scripts/verify-dsh.mjs     # 57 项：离线渲染 + 挂点护栏（不占 
                                 #        + meta 落盘（health / 写想法） + 写操作 fail-closed + 放行后落盘
                                 #        + 后端来法（默认进程内 L3 / AITM_URL / AITM_L3=0）+ 不留常驻后端进程
                                 #        + 工具层（真 L3 + 临时数据目录：11 个工具的输出过宿主同款 schema，含负例）
+                                #        + 原生日历的取数通道（postAction 打真 L3 / 报错抛出 / 跨源 OPTIONS 预检带 CORS 头）
 node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起后端、缺什么、后端日志尾巴
 ```
 
