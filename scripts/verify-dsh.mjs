@@ -335,6 +335,35 @@ async function checkRender() {
       // 属历史遗留，记在 HANDOVER 的待清理项里，不在这一批动（动它等于改全站配色，得能在真机看）
       ok.includes('--dsw-alias-state-success-primary') && bad.includes('--dsw-alias-state-error-primary'),
     );
+    {
+      /* 守门：加新状态时忘了补配色 ⇒ 静默落灰（2026-10-07 那条 bug 的根因正是这个）。
+         直接从源码抠两张配色表的键，跟内核的状态清单对表。 */
+      const csrc = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+      const keysOf = (name) => {
+        const m = new RegExp('const ' + name + ' = \\{([\\s\\S]*?)\\n    \\};').exec(csrc);
+        return m ? [...m[1].matchAll(/(\w+):\s*(?:tone\(|\[)/g)].map((x) => x[1]) : [];
+      };
+      const ideaKeys = keysOf('STATUS_COLOR');
+      const taskKeys = keysOf('TASK_STATUS_COLOR');
+      // 内核的想法状态清单直接从 `src/shared/labels.ts` 对表（分发场景只有插件包 ⇒ 退回固定清单）
+      const labelsPath = path.join(ROOT, '..', 'src', 'shared', 'labels.ts');
+      const wantIdea = (() => {
+        if (!fs.existsSync(labelsPath)) return ['inbox', 'scoping', 'ready', 'developing', 'review', 'blocked', 'done', 'archived'];
+        const mm = /export const IDEA_LABEL[^{]*{([\s\S]*?)\n};/.exec(fs.readFileSync(labelsPath, 'utf8'));
+        return mm ? [...mm[1].matchAll(/(\w+):\s*'/g)].map((x) => x[1]) : [];
+      })();
+      const wantTask = ['queued', 'running', 'waiting_input', 'succeeded', 'failed', 'cancelled'];
+      check(
+        `想法状态配色表覆盖内核全部 ${wantIdea.length} 档（少一档就静默落灰）`,
+        wantIdea.every((k) => ideaKeys.includes(k)),
+        `表里 ${ideaKeys.length} 档：${ideaKeys.join('/')}｜内核要 ${wantIdea.length} 档`,
+      );
+      check(
+        '任务状态配色表覆盖内核全部 6 档（succeeded 在列）',
+        wantTask.every((k) => taskKeys.includes(k)),
+        `表里 ${taskKeys.length} 档：${taskKeys.join('/')}`,
+      );
+    }
     check(
       '状态徽章写本地化文案（succeeded → 已完成），原始状态名留在 title 里',
       taskHtml.includes(locales.aitm.zh['card.task.st.running']) && /data-task-status="running"/.test(taskHtml),

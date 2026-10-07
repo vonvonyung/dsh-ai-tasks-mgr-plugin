@@ -295,6 +295,7 @@ window.__ModuleLoader__.load({
       'board.col.review': '待验收',
       'board.col.blocked': '受阻',
       'board.col.done': '已完成',
+      'board.col.archived': '已归档',
       // 验收（M3：原生看板里也能验收；写工具 aitm_task_accept 的卡片文案同源）
       'board.accept': '验收并合并',
       'board.acceptOnly': '只记验收',
@@ -466,6 +467,7 @@ window.__ModuleLoader__.load({
       'board.col.review': 'Review',
       'board.col.blocked': 'Blocked',
       'board.col.done': 'Done',
+      'board.col.archived': 'Archived',
       'board.accept': 'Accept & merge',
       'board.acceptOnly': 'Record only',
       'board.acceptAgain': 'Re-check (already merged)',
@@ -500,13 +502,18 @@ window.__ModuleLoader__.load({
       return table[name] ?? table.grey;
     };
 
-    /** 想法状态 → 语义色（与桌面端 `.pill.<status>` 同一套语义） */
+    /**
+     * 想法状态 → 语义色。**逐档对齐桌面端 `styles.css` 的 `.pill.<status>`**（色相：灰 / 紫 / 青 / 蓝 / 琥珀 / 红 / 绿 / 暗灰）：
+     * inbox 灰、scoping 紫、ready 青、developing 蓝、review 琥珀、blocked 红、done 绿、archived 暗灰。
+     * 宿主没有「青 / 紫」两档的语义令牌 ⇒ 这两档用固定色值（浅深主题下都能辨色），其余全走 `--dsw-alias-state-*`。
+     */
     const STATUS_COLOR = {
-      inbox: tone('info'),
-      scoping: tone('warn'),
-      ready: tone('ok'),
-      developing: tone('accent'),
+      inbox: tone('grey'),
+      scoping: tone('accent'),
+      ready: ['rgba(34,184,207,0.16)', '#22b8cf'],
+      developing: tone('info'),
       review: tone('warn'),
+      blocked: tone('err'),
       done: tone('ok'),
       archived: tone('grey'),
     };
