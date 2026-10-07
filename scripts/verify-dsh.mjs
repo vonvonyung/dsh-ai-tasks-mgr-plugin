@@ -374,10 +374,13 @@ async function checkRender() {
   }));
   check('空列给「拖想法到这里」（不是一片空白）', emptyColHtml.includes('board.dropHere'));
   /* 手机端（M3 最后一项）：窄屏不溢出 + 触摸能改状态 */
+  /* 列宽必须是**定宽**（width），不能是 flex-basis —— 2026-10-07 用户真机报过「卡片宽度太大」：
+     没有 width 时列上的 `min-width: auto` 取内容最小值，卡片里那行 nowrap 的「…原文：https://…」
+     约 500px 宽 ⇒ 整列被撑到 500px。这条断言就是防它回来。 */
   check(
-    '看板列宽是流体的（窄屏一列占满大半、露下一列示意可横滑；桌面端仍是 172px）',
-    colHtml.includes('min(172px, 82%)'),
-    colHtml.match(/flex-basis:[^;"]+/)?.[0] ?? '(没找到)',
+    '看板列是定宽 172px（不是 flex-basis —— 那会让长文本把列撑宽）',
+    /width:172px/.test(colHtml) && colHtml.includes('min-width:0') && !colHtml.includes('flex-basis'),
+    colHtml.match(/width:[^;"]+/)?.[0] ?? '(没找到 width)',
   );
   {
     // clientSrc 在后面才读，这里就近读一份（只 grep 源码字面量，不依赖加载顺序）
@@ -626,7 +629,8 @@ async function checkRender() {
   {
     let touchLoaded = null;
     globalThis.window = { __ModuleLoader__: { load({ id, factory }) { touchLoaded = { id, exports: factory(require) }; } } };
-    globalThis.matchMedia = (q) => ({ matches: String(q).includes('pointer: coarse'), addEventListener: () => {}, removeEventListener: () => {} });
+    // 一台「手机」：触屏 + 窄视口（DSH 移动版式），两个判定都要匹配上
+    globalThis.matchMedia = (q) => ({ matches: /pointer: coarse|max-width: 520px/.test(String(q)), addEventListener: () => {}, removeEventListener: () => {} });
     await import(`${pathToFileURL(path.join(ROOT, 'client.js')).href}?touch=${String(Date.now())}`);
     const touchCtx = {
       slots: { inject: (n, cb) => { cb(); return () => {}; }, register: () => () => {} },
@@ -640,8 +644,8 @@ async function checkRender() {
     const touchColHtml = renderToStaticMarkup(React.createElement(TouchCol, {
       status: 'ready', ideas: [{ id: 'i_1', title: '触屏', status: 'ready', tags: [], updatedAt: Date.now() }], repos: [], tasks: [], selected: null, onOpen: () => {}, onStar: () => {}, onDrop: () => {}, t: (k) => k,
     }));
-    check('触屏（pointer:coarse）：列宽仍是流体的 + 点按目标抬到 30px', touchColHtml.includes('min(172px, 82%)') && touchColHtml.includes('min-height:30px'), touchColHtml.includes('min-height:30px') ? 'min-height:30px 在' : (touchColHtml.match(/min-height:\d+px/)?.[0] ?? '(没找到)'));
-    check('触屏：列宽流体（同一份代码，两种设备同一套布局）', touchColHtml.includes('min(172px, 82%)'));
+    check('手机（触屏 + 窄视口）：列宽 82%（一列占满大半、露下一列）+ 点按目标抬到 30px', touchColHtml.includes('width:82%') && touchColHtml.includes('min-height:30px'), touchColHtml.match(/width:[^;"]+/)?.[0] ?? '(没找到 width)');
+    check('手机列宽也是定宽（同一份代码两种取值：窄屏 82% / 桌面 172px），且都带 min-width:0 兜底', touchColHtml.includes('min-width:0') && touchColHtml.includes('width:82%') && colHtml.includes('width:172px'));
     check(
       '触屏上卡片不给 draggable（触摸拖不起来，开着只会吃掉长按/滚动）—— 桌面仍是 true',
       touchColHtml.includes('draggable="false"') && colHtml.includes('draggable="true"'),

@@ -38,6 +38,19 @@ window.__ModuleLoader__.load({
     const TAP = COARSE_POINTER ? { minHeight: 30, minWidth: 30 } : {};
     const TAP_WIDE = COARSE_POINTER ? { minHeight: 30, paddingLeft: 8, paddingRight: 8 } : {};
 
+    /**
+     * 窄容器（手机）判定：只用来定看板列宽 —— 窄屏一列占满大半（露下一列示意可横滑）。
+     * 用视口宽度当面板宽度的近似：手机上 DSH 的面板就是整屏；桌面端不匹配（列宽保持 172）。
+     * 同样是**加载时算一次**，改窗口大小不重算（真机验收记得重载页面，见 TESTING M65）。
+     */
+    const NARROW_PANEL = (() => {
+      try {
+        return typeof globalThis.matchMedia === 'function' && Boolean(globalThis.matchMedia('(max-width: 520px)')?.matches);
+      } catch {
+        return false;
+      }
+    })();
+
     /** 实现身份（tab 系统的唯一 id，也是 body/title 两个 keyed 槽的 key） */
     const TAB_ID = 'dsh-plugin-aitm';
     /** 类型判别符：openTab 用的名字 */
@@ -849,12 +862,20 @@ window.__ModuleLoader__.load({
       },
       counts: { padding: '4px 10px 5px', opacity: 0.7, fontSize: 11.5, borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none' },
       cols: { display: 'flex', gap: 6, padding: '6px 8px 8px', overflowX: 'auto', alignItems: 'flex-start', flex: 1, minHeight: 0, overflowY: 'auto' },
+      /**
+       * 列宽：桌面**定宽 172**；窄容器（手机）82% —— 一列占满大半、右侧露下一列示意可横滑。
+       *
+       * 必须写成 `width`（定宽），**不能写成 `flexBasis`** —— 用户真机报过「卡片宽度太大」：
+       * 没有 width 时，这一列的 `min-width: auto` 会取**内容最小值**（flex 规范的内容相关最小尺寸），
+       * 而卡片里那行「（素材来源…）原文：https://…」是 `white-space: nowrap` 的单行省略号，
+       * 它的内容最小值约 500px ⇒ 整列被撑到 500px，卡片跟着一起变宽。
+       * `width` 是「指定尺寸」，内容最小值被它压住；`minWidth: 0` 再兜一层（防以后又混进长不可断串）。
+       */
       col: (over) => ({
-        // 窄屏（手机）列宽跟着容器走：`min(172px, 82%)` —— 一列占满大半、右侧露出下一列的边
-        // （横滑的示意）；桌面端容器宽 >210px 时它就是原来的 172px，**视觉一字不变**。
-        flexGrow: 0,
-        flexShrink: 0,
-        flexBasis: 'min(172px, 82%)',
+        flex: 'none',
+        width: NARROW_PANEL ? '82%' : 172,
+        minWidth: 0,
+        maxWidth: '100%',
         background: over ? 'var(--dsh-color-fill, rgba(127,127,127,0.10))' : 'transparent',
         borderRadius: 8,
         padding: 4,
