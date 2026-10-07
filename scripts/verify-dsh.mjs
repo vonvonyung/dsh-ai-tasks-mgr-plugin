@@ -617,9 +617,27 @@ async function checkRender() {
       B2.loadedClientRev(single) === 'abc123def456' && B2.loadedClientRev(combo) === null && B2.loadedClientRev(other) === null && B2.loadedClientRev([]) === null,
       `单插件→${String(B2.loadedClientRev(single))} / combo→${String(B2.loadedClientRev(combo))}`,
     );
+    // 用户真机报过「面板是新代码，rev 却显示不一致」：DSH 热更新换过模块之后资源表里有多条记录，
+    // 必须先加载的那条是旧的 —— 取**最后**一条才是本页现在跑的这份。
+    const hmr = [
+      { name: 'https://x/plugins/??dsh-plugin-aitm/client.js&rev=old0000000000' },
+      { name: 'https://x/plugins/??dsh-plugin-aitm/client.js&rev=new1111111111' },
+    ];
     check(
-      '设置节里会拿「本页 rev」跟服务端 rev 对，并给出不一致的人话',
-      clientSrc.includes('（本页一致）') && clientSrc.includes('（⚠ 本页加载的是'),
+      '热更新换过模块时取**最后一次**加载的（资源表里旧记录在前，不能拿第一条）',
+      B2.loadedClientRev(hmr) === 'new1111111111' && B2.loadedClientScriptUrl(hmr) === hmr[1].name,
+      `多条→${String(B2.loadedClientRev(hmr))}`,
+    );
+    check(
+      '定论优先用内容 sha1（只看字节）：rev 对不上但内容一致 ⇒ ok；内容不一致 ⇒ stale；都缺 ⇒ unknown',
+      B2.clientVerdict({ serverRev: 'a', pageRev: 'b', serverSha: 'shaX', pageSha: 'shaX' }) === 'ok' &&
+        B2.clientVerdict({ serverRev: 'a', pageRev: 'b', serverSha: 'shaX', pageSha: 'shaY' }) === 'stale' &&
+        B2.clientVerdict({ serverRev: 'a', pageRev: 'a', serverSha: null, pageSha: null }) === 'ok' &&
+        B2.clientVerdict({ serverRev: null, pageRev: null, serverSha: null, pageSha: null }) === 'unknown',
+    );
+    check(
+      '设置节里会给出三种人话（一致 / 一致·内容已校验 / ⚠ 不一致），且服务端会带上 clientSha',
+      clientSrc.includes('（本页一致）') && clientSrc.includes('（本页一致 · 内容已校验）') && clientSrc.includes('（⚠ 本页加载的是') && fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8').includes('clientSha: clientSha()'),
     );
   }
 

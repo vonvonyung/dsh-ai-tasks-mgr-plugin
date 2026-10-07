@@ -86,6 +86,21 @@ function pluginVersion() {
  * —— 改了 client.js 却没生效时（浏览器缓存 / DSH 加载的是另一份安装 / 根本没 pull），
  * 拿 DSH 网络面板里 `/plugins/??…/client.js&rev=xxxx` 的 xxxx 和这里比一下即可定位。
  */
+/**
+ * client.js **内容**的 sha1 前 12 位。
+ *
+ * 与 `clientRevision()`（文件元数据的哈希）互补：元数据哈希会因「换个机器 pull」「被 touch 一下」
+ * 「DSH 登记时刻不同」而变，**内容哈希只认字节**。面板拿它做定论：
+ * 本页把自己那份代码取回来算同样的 sha1，两边一致 ⇒ 页面上就是磁盘上这份（rev 对不上也不怕）。
+ */
+function clientSha() {
+  try {
+    return crypto.createHash('sha1').update(fs.readFileSync(path.join(PLUGIN_DIR, 'client.js'))).digest('hex').slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
 function clientRevision() {
   try {
     const st = fs.statSync(path.join(PLUGIN_DIR, 'client.js'));
@@ -799,6 +814,8 @@ export function diagnose() {
     pluginVersion: pluginVersion(),
     /** 客户端半边（client.js）指纹 —— 和 DSH 的 `&rev=` 同算法，用来回答「面板是哪一版」 */
     clientRev: clientRevision(),
+    /** 同一份文件的**内容** sha1（定论用：面板自己取回代码算一遍，字节一致才算「本页就是这份」） */
+    clientSha: clientSha(),
     /**
      * 后端来法（**实际会走哪条**，不只是配置）：l3（仓库内进程内 L3）/ vendor（包里自带内核）/
      * external（AITM_URL）/ spawn（AITM_L3=0 的旧桥）/ error（自检没过，起不来）。
@@ -999,6 +1016,7 @@ export function apply(ctx) {
               vendorL3: vendorPresent(),
               pluginVersion: pluginVersion(),
               clientRev: clientRevision(),
+              clientSha: clientSha(),
               apiRevRequired: REQUIRED_API_REV,
               identity: state.identity,
               log: state.log.slice(-8),

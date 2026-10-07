@@ -46,14 +46,27 @@ window.__ModuleLoader__.load({
      */
     function loadedClientRev(entries) {
       try {
-        for (const e of entries ?? []) {
-          const url = String(e?.name ?? '');
-          const m = /\/plugins\/\?\?([^&]*)&rev=([0-9a-zA-Z]{6,})/.exec(url);
+        // **从后往前找**：DSH 热更新（HMR）换过一次模块之后，同一个 client.js 会有多条记录
+        // （每条一个 rev），先加载的那条是旧的。用户真机就踩过：面板是新代码，这行却读到旧 rev。
+        const url = loadedClientScriptUrl(entries);
+        return url ? (/[?&]rev=([0-9a-zA-Z]{6,})/.exec(url)?.[1] ?? null) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    /** 本页**最后一次**加载的 client.js 的完整 URL（给内容校验用）；认不出返回 null */
+    function loadedClientScriptUrl(entries) {
+      try {
+        const list = entries ?? [];
+        for (let i = list.length - 1; i >= 0; i -= 1) {
+          const url = String(list[i]?.name ?? '');
+          const m = /\/plugins\/\?\?([^&]*)&rev=[0-9a-zA-Z]{6,}/.exec(url);
           if (!m) continue;
           const ids = m[1];
           if (!ids.endsWith('/client.js')) continue; // 只要脚本本体（sourcemap、chunk 之类都不算）
           if (ids.includes(',')) continue; // 多插件合并的 combo：rev 是整包的，不是我们这一份的
-          return m[2];
+          return url;
         }
         return null;
       } catch {
@@ -61,11 +74,37 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 本页实际加载的 rev（浏览器里读一次；离线渲染 / jsdom 里没有 performance 就返回 null） */
-    function loadedRevHere() {
+    /** 本页实际加载的脚本 URL（浏览器里读一次；离线渲染 / jsdom 里没有 performance 就返回 null） */
+    function loadedScriptUrlHere() {
       try {
         if (typeof globalThis.performance?.getEntriesByType !== 'function') return null;
-        return loadedClientRev(globalThis.performance.getEntriesByType('resource'));
+        return loadedClientScriptUrl(globalThis.performance.getEntriesByType('resource'));
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * 判定「本页跑的代码 == 磁盘上那份」。
+     *
+     * rev 是**文件元数据**（mtime/ctime/size）的哈希，DSH 只在登记/热更那一刻算一次：
+     * 机器间不同步（pull 时间不同就不同）、文件被 touch 一下就变（哪怕字节没变）、
+     * 页面被 HMR 就地换过时资源表里还留着旧记录 —— 所以 rev 只能当**快判**，不当定论。
+     * 真定论用内容 sha1（只看字节）：两边都有就用它。
+     */
+    function clientVerdict({ serverRev, pageRev, serverSha, pageSha }) {
+      if (serverSha && pageSha) return serverSha === pageSha ? 'ok' : 'stale';
+      if (serverRev && pageRev) return serverRev === pageRev ? 'ok' : 'stale';
+      return 'unknown';
+    }
+
+    /** 浏览器端 sha1 前 N 位（crypto.subtle 拿不到就返回 null：不猜） */
+    async function sha1PrefixHex(buf, n = 12) {
+      try {
+        const subtle = globalThis.crypto?.subtle;
+        if (!subtle || !buf) return null;
+        const digest = await subtle.digest('SHA-1', buf);
+        return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, n);
       } catch {
         return null;
       }
@@ -2688,6 +2727,32 @@ window.__ModuleLoader__.load({
       const rev = cfg.identity?.apiRev ?? cfg.health?.apiRev ?? null;
       const revRequired = cfg.apiRevRequired ?? 2;
       const stale = rev !== null && rev < revRequired;
+      // 本页加载的 client.js（rev 只能快判：元数据哈希，跨机器/被 touch/被 HMR 换过都会「看起来不一致」）
+      const hereUrl = loadedScriptUrlHere();
+      const hereRev = hereUrl ? (/[?&]rev=([0-9a-zA-Z]{6,})/.exec(hereUrl)?.[1] ?? null) : null;
+      const [pageSha, setPageSha] = react.useState(null);
+      react.useEffect(() => {
+        // rev 已经一致就不用多此一举；不一致时**取回自己这份代码的字节**算 sha1，和服务端给的文件 sha1 比 ——
+        // 这是「本页到底是不是磁盘上那份」的定论（内容哈希，不掺时间戳）。
+        if (!hereUrl || !cfg.clientSha || !cfg.clientRev || hereRev === cfg.clientRev) return undefined;
+        let alive = true;
+        void fetch(hereUrl, { credentials: 'same-origin' })
+          .then((r) => (r.ok ? r.arrayBuffer() : null))
+          .then((buf) => (buf ? sha1PrefixHex(buf, 12) : null))
+          .then((sha) => {
+            if (alive && sha) setPageSha(sha);
+          })
+          .catch(() => undefined);
+        return () => {
+          alive = false;
+        };
+      }, [hereUrl, hereRev, cfg.clientRev, cfg.clientSha]);
+      const verdict = clientVerdict({ serverRev: cfg.clientRev, pageRev: hereRev, serverSha: cfg.clientSha, pageSha });
+      const panelNote = () => {
+        if (verdict === 'ok') return pageSha ? '（本页一致 · 内容已校验）' : '（本页一致）';
+        if (verdict === 'stale') return `（⚠ 本页加载的是 ${hereRev ?? '另一份'}，重启 DSH + 硬刷）`;
+        return '';
+      };
       return jsx.jsxs('div', { className: 'aitm-settings-section', 'data-plugin': 'dsh-plugin-aitm', children: [
         jsx.jsx('h3', { children: TITLE }, 'h'),
         jsx.jsxs('div', { style: { marginTop: 6 }, children: [
@@ -2697,15 +2762,7 @@ window.__ModuleLoader__.load({
           // 面板产物指纹：改了 client.js 却没生效时，这是最快的判据 ——
           // `client.js rev` 是**服务端文件**当前的值（= DSH 网络面板里 &rev= 的那个值），
           // 后面的「本页 …」是**这个页面实际加载的**那份；两者不一致 ⇒ 页面上是旧代码，重启 DSH + 硬刷。
-          row(
-            '面板',
-            (cfg.pluginVersion ? `${cfg.pluginVersion}${cfg.clientRev ? ` · client.js rev ${cfg.clientRev}` : ''}` : '—') +
-              (() => {
-                const here = loadedRevHere();
-                if (!here || !cfg.clientRev) return '';
-                return here === cfg.clientRev ? '（本页一致）' : `（⚠ 本页加载的是 ${here}，重启 DSH + 硬刷）`;
-              })(),
-          ),
+          row('面板', (cfg.pluginVersion ? `${cfg.pluginVersion}${cfg.clientRev ? ` · client.js rev ${cfg.clientRev}` : ''}` : '—') + panelNote()),
           row('数据目录', cfg.identity?.dataDir ?? cfg.health?.dataDir ?? '—'),
           row('仓库', cfg.repo ?? '—'),
           row('错误', cfg.error ?? '无'),
@@ -2797,7 +2854,7 @@ window.__ModuleLoader__.load({
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
     exports.__calendarHelpers = { monthGridDays, shiftMonth, dayKeyLocal, groupByDayLocal, monthLabel, dayLabel, postAction };
     /** 给 verify 用：看板的列序 / 分桶 / 相对时间（纯计算，不依赖 React） */
-    exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime, loadedClientRev };
+    exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime, loadedClientRev, loadedClientScriptUrl, clientVerdict };
     /** 给 verify 用：客户端半边依赖的服务名（每个都必须有提供者，否则整块 pending → 白屏） */
     exports.__clientInject = [...inject];
     /** 给 verify 用：卡片注册了哪些工具名 */
