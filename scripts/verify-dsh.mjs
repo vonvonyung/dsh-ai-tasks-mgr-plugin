@@ -270,8 +270,8 @@ async function checkRender() {
   const cardTools = loaded.exports.__cardTools ?? [];
   const cardRegs = regs.filter((r) => r.d.name === 'tool.call.toolview');
   check(
-    '12 个工具都注册了工具卡（keyed，key = 工具名）',
-    cardTools.length === 12 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
+    '13 个工具都注册了工具卡（keyed，key = 工具名）',
+    cardTools.length === 13 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
     cardRegs.map((r) => r.d.key).join(', '),
   );
   check('工具卡挂在我们自己的文案表上', cardRegs.every((r) => r.d.locale === 'aitm') && Object.keys(locales.aitm?.zh ?? {}).length > 0, `ns=${Object.keys(locales).join(',')}`);
@@ -455,6 +455,33 @@ async function checkRender() {
   );
   // 详情里的验收条要有**结构**（服务端渲染没有数据时是空的，所以只断言组件认识 accept 这条通道）
   check('原生看板认识验收通道（组件导出 + 文案在词典里）', Boolean(loaded.exports.__components.AitmBoard) && typeof dict.zh?.['board.accept'] === 'string' && typeof dict.zh?.['board.acceptOnly'] === 'string');
+  {
+    /* 任务行（详情里）：被中断/失败 → 「继续」「重试」+ 原因原话；正在跑 → 只写「进行中」，不给按钮 */
+    const Row = loaded.exports.__components.BoardTaskRow;
+    const B3 = loaded.exports.__boardHelpers;
+    check('导出任务行组件（verify 能离线断言它）', typeof Row === 'function' && !!B3);
+    const rowHtml = (x, extra = {}) =>
+      renderToStaticMarkup(
+        React.createElement(Row, { x, t: fakeT, editing: false, text: '', onToggleEditor: () => {}, onText: () => {}, onSend: () => {}, onRetry: () => {}, ...extra }),
+      );
+    const interrupted = rowHtml({ id: 't_7', status: 'failed', turns: 3, error: '应用重启导致中断；worktree 仍在，可直接继续对话' });
+    check(
+      '被中断的任务：给「继续」+「重试」，并把中断原因原样写出来',
+      interrupted.includes('data-task-follow="1"') && interrupted.includes('data-task-retry="1"') && interrupted.includes('t_7') && interrupted.includes('worktree 仍在'),
+      `${interrupted.length} 字节`,
+    );
+    const runningRow = rowHtml({ id: 't_8', status: 'running', turns: 1 });
+    check('正在跑的任务：不给这两个按钮，只写「进行中」（内核也会拒）', !runningRow.includes('data-task-follow') && !runningRow.includes('data-task-retry') && runningRow.includes(dict.zh['board.taskActive']));
+    const editingRow = rowHtml({ id: 't_7', status: 'failed' }, { editing: true, text: '把测试补上' });
+    check('点「继续」展开输入框（指令 + 发送），发送按钮带 data 锚点', editingRow.includes('data-task-input="1"') && editingRow.includes('data-task-send="1"') && editingRow.includes('把测试补上'));
+    check(
+      '「继续/重试」走的是内核那两条（followUp 复用 worktree；retry 新起一条）—— 源码里点名',
+      fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8').includes("'task.followUp'") &&
+        fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8').includes("'task.retry'") &&
+        typeof dict.zh?.['board.taskQueued'] === 'string' &&
+        typeof dict.zh?.['board.taskQueuedRetry'] === 'string',
+    );
+  }
 
   /* ---- 原生日历（不走 iframe 的那块）---- */
   const H = loaded.exports.__calendarHelpers;
@@ -717,7 +744,7 @@ async function checkWriteGate() {
   host.apply(ctx);
 
   const names = regs.tools.map((t) => t.name ?? t.definition?.name).filter(Boolean);
-  const writeTools = ['aitm_idea_create', 'aitm_idea_set_status', 'aitm_task_start', 'aitm_backup_now', 'aitm_task_accept'];
+  const writeTools = ['aitm_idea_create', 'aitm_idea_set_status', 'aitm_task_start', 'aitm_task_follow_up', 'aitm_backup_now', 'aitm_task_accept'];
   check('五个写工具都注册了', writeTools.every((n) => names.includes(n)), names.join(', '));
 
   const gate = regs.hooks.find((h) => h.name === 'tools/pre-execute')?.fn;
@@ -744,6 +771,10 @@ async function checkWriteGate() {
     allow,
   );
   check('开工（aitm_task_start）→ ask', startAsk?.kind === 'ask', startAsk?.displayReason?.zh ?? '');
+  const followAsk = await gate({ name: 'aitm_task_follow_up', arguments: { taskId: 't_1', instruction: '把测试补上' }, signal: { aborted: false } }, allow);
+  check('继续任务（aitm_task_follow_up）→ ask', followAsk?.kind === 'ask', followAsk?.displayReason?.zh ?? '');
+  const followNoArg = await gate({ name: 'aitm_task_follow_up', arguments: { taskId: 't_1' }, signal: { aborted: false } }, allow);
+  check('继续任务缺 instruction → deny（原话里点名哪个工具）', followNoArg?.kind === 'deny' && /aitm_task_follow_up/.test(String(followNoArg?.reason ?? '')), String(followNoArg?.reason ?? ''));
   const backupAsk = await gate({ name: 'aitm_backup_now', arguments: { mode: 'full' }, signal: { aborted: false } }, allow);
   check('备份（aitm_backup_now）→ ask', backupAsk?.kind === 'ask', backupAsk?.displayReason?.zh ?? '');
   const noIdea = await gate({ name: 'aitm_task_start', arguments: { instruction: 'x' }, signal: { aborted: false } }, allow);
@@ -917,7 +948,7 @@ async function checkTools() {
     host.apply(fakeCtx);
 
     const names = [...tools.keys()].sort();
-    check('12 个工具全部注册', names.length === 12, names.join(', '));
+    check('13 个工具全部注册', names.length === 13, names.join(', '));
 
     // 注意：`defineTool` 在注册时已经把 spec 转成 JSON Schema 存在 `tool.output.schema` 上，
     // 这里必须**直接用**它 —— 再调一次 valueSchemaSpecToJsonSchema 会报

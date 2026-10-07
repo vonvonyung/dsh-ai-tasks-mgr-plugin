@@ -266,6 +266,18 @@ window.__ModuleLoader__.load({
       'board.counts': '全量：',
       'board.running': '执行中 {n} · 排队 {n2}',
       'board.moveTo': '改状态：',
+      'board.tasks': '任务（点「继续」在原 worktree 上接着干；「重试」＝同指令新起一条）',
+      'board.taskFollow': '继续',
+      'board.taskRetry': '重试',
+      'board.taskFollowHint': '接着干：在这个任务的 worktree 上追加一条指令（同一会话继续）',
+      'board.taskRetryHint': '重试：用同样的指令**新起一条任务**（新 worktree，从基线开始；旧现场保留）',
+      'board.taskSend': '发送',
+      'board.taskCancel': '取消',
+      'board.taskQueued': '已排入队列，接着干。进展在完整面板（或对话里问「任务怎么样了」）看。',
+      'board.taskQueuedRetry': '已按原指令新起一条任务。',
+      'board.taskBlocked': '这个任务正在跑（{st}），先等它停或中断',
+      'board.taskActive': '进行中',
+      'board.taskInterrupted': '被中断：{msg}',
       'board.back': '← 返回看板',
       'board.openFull': '在完整面板里打开',
       'board.detailLoading': '正在取详情…',
@@ -419,6 +431,18 @@ window.__ModuleLoader__.load({
       'board.counts': 'All: ',
       'board.running': '{n} running · {n2} queued',
       'board.moveTo': 'Move to:',
+      'board.tasks': 'Tasks（Continue = keep working in the same worktree; Retry = new task with the same instruction）',
+      'board.taskFollow': 'Continue',
+      'board.taskRetry': 'Retry',
+      'board.taskFollowHint': 'Continue: append an instruction to this task (same worktree, same session)',
+      'board.taskRetryHint': 'Retry: start a NEW task with the same instruction (new worktree from base; the old one is kept)',
+      'board.taskSend': 'Send',
+      'board.taskCancel': 'Cancel',
+      'board.taskQueued': 'Queued — it will keep going. Watch progress in the full panel (or ask "how is the task doing").',
+      'board.taskQueuedRetry': 'Started a new task with the same instruction.',
+      'board.taskBlocked': 'This task is still running ({st}) — wait or interrupt it first',
+      'board.taskActive': 'running',
+      'board.taskInterrupted': 'Interrupted: {msg}',
       'board.back': '← Back to board',
       'board.openFull': 'Open in full panel',
       'board.detailLoading': 'Loading details…',
@@ -557,6 +581,7 @@ window.__ModuleLoader__.load({
         : toolName === 'aitm_idea_get' ? `看想法 ${String(args.id ?? '…')}`
         : toolName === 'aitm_feed_today' ? '读今日合集'
         : toolName === 'aitm_task_start' ? `开工 ${String(args.ideaId ?? '…')}`
+        : toolName === 'aitm_task_follow_up' ? `继续任务 ${String(args.taskId ?? '…')}`
         : toolName === 'aitm_task_status' ? '看任务进度'
         : toolName === 'aitm_calendar_day' ? `看日历 ${String(args.day ?? '今天')}`
         : toolName === 'aitm_repo_status' ? '看仓库与工作区'
@@ -890,6 +915,7 @@ window.__ModuleLoader__.load({
       'aitm_idea_set_status',
       'aitm_task_status',
       'aitm_task_start',
+      'aitm_task_follow_up',
       'aitm_calendar_day',
       'aitm_repo_status',
       'aitm_backup_now',
@@ -1060,6 +1086,61 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /**
+     * 详情里的一行任务（纯展示）：状态 / id / 轮次 + 「继续」「重试」，被中断时把原因原样写出来。
+     *
+     * - **继续**（`task.followUp`）：在同一 worktree 上追加一条指令（半成品接着干）—— 宿主重启把任务
+     *   标成 failed 之后，这就是「怎么接着干」的入口。
+     * - **重试**（`task.retry`）：用同样的指令**新起一条任务**（新 worktree、从基线开始；旧现场保留）。
+     * - 正在跑的任务（queued/running/waiting_input）不给这两个按钮（内核也会拒），只写「进行中」。
+     */
+    function BoardTaskRow({ x, t, editing, text, onToggleEditor, onText, onSend, onRetry }) {
+      const active = ['queued', 'running', 'waiting_input'].includes(String(x.status));
+      return jsx.jsxs('div', { style: { borderTop: '1px solid var(--dsh-color-border, rgba(127,127,127,0.18))', padding: '5px 2px' }, 'data-task-row': x.id, children: [
+        jsx.jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }, children: [
+          jsx.jsx('span', { style: { opacity: 0.85 }, children: String(x.status) }, 'st'),
+          jsx.jsx('span', { style: { opacity: 0.65, fontFamily: 'ui-monospace, monospace' }, children: String(x.id) }, 'id'),
+          x.turns ? jsx.jsx('span', { style: { opacity: 0.6 }, children: `${String(x.turns)} 轮` }, 'turn') : null,
+          active
+            ? jsx.jsx('span', { style: { opacity: 0.7, marginLeft: 'auto' }, children: t('board.taskActive') }, 'act')
+            : jsx.jsxs('span', { style: { marginLeft: 'auto', display: 'flex', gap: 4 }, children: [
+                jsx.jsx('button', {
+                  type: 'button',
+                  style: BOARD.chip(),
+                  title: t('board.taskFollowHint'),
+                  'data-task-follow': '1',
+                  onClick: onToggleEditor,
+                  children: t('board.taskFollow'),
+                }, 'follow'),
+                jsx.jsx('button', {
+                  type: 'button',
+                  style: BOARD.chip(),
+                  title: t('board.taskRetryHint'),
+                  'data-task-retry': '1',
+                  onClick: onRetry,
+                  children: t('board.taskRetry'),
+                }, 'retry'),
+              ] }, 'acts'),
+        ] }, 'row'),
+        x.error ? jsx.jsx('div', { style: { fontSize: 11, opacity: 0.75, marginTop: 2, wordBreak: 'break-word' }, children: t('board.taskInterrupted', { msg: String(x.error) }) }, 'err') : null,
+        editing
+          ? jsx.jsxs('div', { style: { marginTop: 4 }, children: [
+              jsx.jsx('textarea', {
+                style: { ...BOARD.input, minHeight: 44, resize: 'vertical', fontFamily: 'inherit' },
+                placeholder: t('board.taskFollowHint'),
+                value: text,
+                'data-task-input': '1',
+                onChange: (e) => onText(e.target.value),
+              }, 'input'),
+              jsx.jsxs('div', { style: { display: 'flex', gap: 4, marginTop: 4 }, children: [
+                jsx.jsx('button', { type: 'button', style: BOARD.chip(), 'data-task-send': '1', onClick: onSend, children: t('board.taskSend') }, 'send'),
+                jsx.jsx('a', { style: BOARD.link, onClick: onToggleEditor, children: t('board.taskCancel') }, 'cancel'),
+              ] }, 'row2'),
+            ] }, 'editor')
+          : null,
+      ] });
+    }
+
     /** 一列（纯展示 + 拖放目标） */
     function BoardColumn(props) {
       const { status, ideas, repos, tasks, selected, onOpen, onStar, onDrop, onDragStart, onDragEnd, t } = props;
@@ -1136,6 +1217,9 @@ window.__ModuleLoader__.load({
       const [accepting, setAccepting] = react.useState(false);
       const [acceptNote, setAcceptNote] = react.useState(null);
       const [ackFail, setAckFail] = react.useState(false); // 「验证没过也要合」
+      // 任务「继续」（followUp）／「重试」（retry）：taskId + 内联指令
+      const [taskAct, setTaskAct] = react.useState(null); // { taskId, text }
+      const [taskNote, setTaskNote] = react.useState(null);
       const qRef = react.useRef(q);
       qRef.current = q;
       const loadRef = react.useRef(null); // 给事件流用：不进依赖，免得一改筛选就重连
@@ -1276,6 +1360,39 @@ window.__ModuleLoader__.load({
         }
       };
 
+      /**
+       * 「继续」（task.followUp）：在**同一个任务**上追加一条指令 —— 复用同一 worktree 与引擎会话，
+       * 半成品接着干。任务被宿主中断（关 DSH）、失败、跑完没过验收，都用这条。
+       * 与「重试」的区别：重试是 `task.retry`，用同样的指令**新起一条任务**（新 worktree、从基线开始）。
+       */
+      const followTask = async (taskId) => {
+        const text = String(taskAct?.text ?? '').trim();
+        if (!text) return;
+        setTaskNote(null);
+        try {
+          await postAction(base, 'task.followUp', { taskId, instruction: text });
+          setTaskAct(null);
+          setTaskNote(t('board.taskQueued'));
+          if (detail) await openDetail(detail.id);
+          await load();
+        } catch (err) {
+          setTaskNote(String(err?.message ?? err));
+        }
+      };
+
+      const retryTask = async (taskId) => {
+        setTaskNote(null);
+        try {
+          await postAction(base, 'task.retry', { taskId });
+          setTaskAct(null);
+          setTaskNote(t('board.taskQueuedRetry'));
+          if (detail) await openDetail(detail.id);
+          await load();
+        } catch (err) {
+          setTaskNote(String(err?.message ?? err));
+        }
+      };
+
       const toggleStar = async (id) => {
         try {
           await postAction(base, 'idea.toggleStar', id);
@@ -1348,6 +1465,29 @@ window.__ModuleLoader__.load({
             'move',
           ),
           acceptNote ? jsx.jsx('div', { style: { padding: '4px 10px', fontSize: 11.5, opacity: 0.9 }, 'data-board-accept-note': '1', children: acceptNote }, 'anote') : null,
+          /* ── 任务区：被中断 / 失败 / 跑完的任务，「继续」或「重试」 ──
+             （宿主重启会把 running 标成 failed 并写「应用重启导致中断；worktree 仍在，可直接继续对话」——
+             这里就是那个「继续」的入口；内核 task.followUp 复用同一 worktree 与引擎会话）*/
+          jsx.jsxs('div', { style: { padding: '0 8px 4px' }, 'data-board-tasks': '1', children: [
+            jsx.jsx('div', { style: { fontSize: 11.5, opacity: 0.7, padding: '2px 2px 4px' }, children: t('board.tasks') }, 'h'),
+            ...(detail.meta?.tasks ?? []).map((x) =>
+              jsx.jsx(
+                BoardTaskRow,
+                {
+                  x,
+                  t,
+                  editing: taskAct?.taskId === x.id,
+                  text: taskAct?.text ?? '',
+                  onToggleEditor: () => setTaskAct(taskAct?.taskId === x.id ? null : { taskId: x.id, text: '' }),
+                  onText: (v) => setTaskAct((a) => (a ? { ...a, text: v } : { taskId: x.id, text: v })),
+                  onSend: () => void followTask(x.id),
+                  onRetry: () => void retryTask(x.id),
+                },
+                String(x.id),
+              ),
+            ),
+          ] }, 'tasks'),
+          taskNote ? jsx.jsx('div', { style: { padding: '2px 10px 6px', fontSize: 11.5, opacity: 0.9 }, 'data-board-task-note': '1', children: taskNote }, 'tnote') : null,
           detail.loading
             ? jsx.jsx('div', { style: { padding: 14, opacity: 0.8 }, children: t('board.detailLoading') }, 'loading')
             : detail.error
@@ -1431,6 +1571,7 @@ window.__ModuleLoader__.load({
           id: x.id,
           status: x.status,
           turns: x.turns ?? 0,
+          ...(x.error ? { error: String(x.error) } : {}),
           ...(x.verify ? { verify: { ok: x.verify.ok === true, note: String(x.verify.note ?? '') } } : {}),
           ...(x.workspace?.mergedAt ? { mergedAt: x.workspace.mergedAt } : {}),
           ...(x.workspace?.baseRef ? { baseRef: x.workspace.baseRef } : {}),
@@ -2848,7 +2989,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard };
+    exports.__components = { BoardTaskRow,  AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard };
     /** 合集的口径副本（纯函数；verify-dsh 拿内核 src/shared/feed-format.ts 逐字比） */
     exports.__feedHelpers = { FEED_KIND_LABEL, FEED_BLOCKS, compactNumber, metricText, trendText, feedPrefill, markFeedRecorded };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */

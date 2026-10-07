@@ -119,6 +119,7 @@ const WRITE_TOOLS = {
   aitm_idea_create: (a) => `在想法箱新建一条：「${String(a?.title ?? '(缺标题)')}」`,
   aitm_idea_set_status: (a) => `把想法 ${String(a?.id ?? '(缺 id)')} 的状态改成 ${String(a?.status ?? '(缺状态)')}`,
   aitm_task_start: (a) => `开工：${String(a?.ideaId ?? '(缺想法)')} → 起一个 AI 任务（建 worktree、跑 CLI）`,
+  aitm_task_follow_up: (a) => `继续任务 ${String(a?.taskId ?? '(缺任务)')}：${String(a?.instruction ?? '').slice(0, 60)}${String(a?.instruction ?? '').length > 60 ? '…' : ''}（在同一 worktree 上接着干）`,
   aitm_backup_now: (a) => `立即备份（${a?.mode === 'full' ? '全量' : '轻量'}）`,
   // 这条是异步的：合并是不可逆动作，审批卡上必须写清「哪条想法、合到哪个基线」，
   // 光给个 taskId 人没法确认（查不到标题就退回 id，绝不因为查不到而卡住审批）
@@ -1652,6 +1653,42 @@ export function apply(ctx) {
 
   ctx.tools.register(
     defineTool({
+      name: 'aitm_task_follow_up',
+      description:
+        '在一个**已有任务**上追加一条指令接着干（写操作，需要用户审批）：复用同一 worktree 与引擎会话，' +
+        '半成品不丢。任务被中断（宿主重启/关掉）、失败、或跑完还没过验收时用它；' +
+        '想「从头再来」不要用这个 —— 那会开新 worktree，旧现场留在那儿。',
+      parameters: {
+        taskId: { type: 'string', description: '任务 id（可先用 aitm_task_status 查；状态 failed/cancelled 的那种）。', required: true },
+        instruction: { type: 'string', description: '这轮要接着干什么（越具体越好；会原样作为追加指令）。', required: true },
+      },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 继续任务：${String(a?.taskId ?? '?')}`, kind: 'execute' }),
+      output: {
+        schema: schemaTaskStatus,
+        presentationMeta: (_a, v) =>
+          v?.ok === false ? { kind: 'task', ok: false, error: v?.error ?? '未知错误' } : { kind: 'task', task: v.task },
+        render: (_a, v) => [{ type: 'text', text: v.ok === false ? `没能继续：${v.error}` : `已接着干：${v.task?.title ?? v.task?.id}（状态 ${v.task?.status}）` }],
+      },
+      async execute(args) {
+        const taskId = String(args.taskId ?? '').trim();
+        const instruction = String(args.instruction ?? '').trim();
+        if (!taskId) return { ok: false, error: 'taskId 必填' };
+        if (!instruction) return { ok: false, error: 'instruction 必填（这轮接着干什么）' };
+        try {
+          const t = await call('task.followUp', { taskId, instruction });
+          return {
+            ok: true,
+            task: { id: t.id, title: t.title, status: t.status, ideaId: t.ideaId, adapterId: t.adapterId ?? null, turns: t.turns ?? 0 },
+          };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
       name: 'aitm_repo_status',
       description: '仓库与工作区占用：有哪些仓库、各自多少个 task worktree、占多少空间、有多少可回收（只读，不删东西）。',
       parameters: {},
@@ -1764,6 +1801,9 @@ export function apply(ctx) {
         }
         if (exec.name === 'aitm_task_start' && (!String(a.ideaId ?? '').trim() || !String(a.instruction ?? '').trim())) {
           return { kind: 'deny', reason: 'aitm: aitm_task_start 缺 ideaId 或 instruction' };
+        }
+        if (exec.name === 'aitm_task_follow_up' && (!String(a.taskId ?? '').trim() || !String(a.instruction ?? '').trim())) {
+          return { kind: 'deny', reason: 'aitm: aitm_task_follow_up 缺 taskId 或 instruction' };
         }
         if (exec.name === 'aitm_task_accept' && !String(a.taskId ?? '').trim()) {
           return { kind: 'deny', reason: 'aitm: aitm_task_accept 缺 taskId' };
