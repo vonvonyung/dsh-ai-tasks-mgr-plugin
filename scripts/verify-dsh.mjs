@@ -74,26 +74,20 @@ try {
 }
 if (selfPkg?.name !== 'ai-tasks-mgr') {
   /*
-   * 两种"没有仓库"要分开对待（2026-10-07 插件有了独立仓库之后才看得出来）：
-   *   ① **独立仓库模式**：插件自己是 git 检出（`dsh-ai-tasks-mgr-plugin`），但旁边没有 AI 任务台仓库
-   *      ⇒ 这个脚本会**一条断言都不跑**就结束。以前这里退出码 0，于是 `npm run verify` 看起来是绿的 ——
-   *      那是**假的**（我自己在独立 checkout 里第一次跑就被它骗了）。现在明确退出 1 + 告诉你怎么跑全。
-   *   ② **装机模式**：同事用 `dsh plugin add` 装的 tarball（没有 .git）
-   *      ⇒ 保持友好退出 0，让人去跑 doctor（那边才是装机自检）。
+   * 没有母仓库 —— **一条断言都跑不了**（内核与面板产物都在母仓库里构建）。
+   * 以前这里退出码 0，于是 `npm run verify` 看起来是绿的：那是**假绿**（2026-10-07 插件有了独立仓库
+   * 之后，我在独立 checkout 里第一次跑就被它骗了）。现在一律**退出 1** + 说清两种情形。
+   *
+   * 为什么不做"独立仓库 vs 装机包"的自动区分：只能靠 `.git` 在不在猜，而 `git archive`/ZIP 下载
+   * 出来的 checkout 没有 `.git`，猜错就又把假绿放回去了。宁可对着装机包也说一句"去跑 doctor"。
    */
-  const standalone = fs.existsSync(path.join(ROOT, '.git'));
-  if (standalone) {
-    console.log('⚠ 独立仓库模式：这个 checkout 里**没有** AI 任务台仓库（推导出的仓库 = ' + REPO + '）。');
-    console.log('  所以这次**一条断言都没跑**（别把退出码 0 当成"通过"—— 现在也**不是** 0）。');
-    console.log('  完整自检（要母仓库在场，插件在主仓库里时本来就在）：');
-    console.log('    AITM_REPO=<AI 任务台仓库绝对路径> node scripts/verify-dsh.mjs');
-    console.log('    —— 或在主仓库里跑：cd dsh-plugin && node scripts/verify-dsh.mjs（163 项）');
-    console.log('  只想看这台机器能不能装/起：node scripts/doctor.mjs');
-    exitWith(1);
-  }
-  console.log(`这个安装里没有 AI 任务台仓库（推导出的仓库 = ${REPO}）。`);
-  console.log('verify-dsh 是**开发侧**自检（要仓库）；装机自检请跑：node scripts/doctor.mjs');
-  exitWith(0);
+  console.log(`⚠ 这里没有 AI 任务台仓库（推导出的仓库 = ${REPO}）—— 本次**一条断言都没跑**，退出码 1。`);
+  console.log('  verify-dsh 是**开发侧**自检：要母仓库在场（内核 dist-server/l3.mjs 与面板 dist/ 都在那边构建）。');
+  console.log('  两种常见情形：');
+  console.log('   ① 独立仓库 dsh-ai-tasks-mgr-plugin 的 checkout：完整自检去母仓库里跑，或者');
+  console.log('      AITM_REPO=<母仓库绝对路径> node scripts/verify-dsh.mjs（aitm.patch.yml 先 make-patch 生成）');
+  console.log('   ② 同事机器上的**装机包**（dsh plugin add 装进来的那份）：本来就不该跑这个，请跑 node scripts/doctor.mjs');
+  exitWith(1);
 }
 
 const results = [];
