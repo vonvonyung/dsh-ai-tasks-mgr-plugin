@@ -1,6 +1,6 @@
 # dsh-plugin-aitm · AI 任务台 × DeepSeek Harness 插件
 
-把 AI 任务台接进 DSH 客户端的最小插件（**工具面 13 个：想法 → 规格 → 任务 → 验收 → 备份**）。
+把 AI 任务台接进 DSH 客户端的最小插件（**工具面 15 个：想法 → 规格 → 任务 → 验收 → 备份**）。
 
 ```
 ┌─ DSH 客户端 ───────────────────────────────────────────┐
@@ -66,7 +66,7 @@
    npx -y @deepseek-ai/dsh@0.2.0-rc.2 web --port 3081
    ```
 
-   右侧栏就会出现「AI 任务台」，对话里 13 个工具可用。**数据目录**默认 `~/.ai-tasks-mgr`
+   右侧栏就会出现「AI 任务台」，对话里 15 个工具可用。**数据目录**默认 `~/.ai-tasks-mgr`
    （想换就设 `AI_TASKS_HOME`；开发机那份在仓库 `.aitasks` 里，两边各自独立）。
 
 3. **装机后自检**（有 DSH 问题先跑这个）：脚本头尾各有一行**汇总**（插件版本 · DSH 版本 ·
@@ -101,7 +101,7 @@
 > `web.mjs`/`seed.mjs` 是 CLI 入口、插件用不上）与 `dist/` 拷进 `dsh-plugin/`（两边都在 `.gitignore` 里，
 > 不进 git），`npm pack` 按 `files` 白名单打包。装了却没内核会**打包时就报错**，不会拖到同事装机才炸。
 
-## 十三个工具（模型可调用）
+## 十五个工具（模型可调用）
 
 | 工具 | 读写 | 干的事 |
 |---|---|---|
@@ -114,13 +114,15 @@
 | `aitm_repo_status` | 只读 | 仓库与 worktree 占用（跑一次 `workspace.gc` 的**预演**，不动磁盘） |
 | `aitm_idea_create` | **写** | 在灵感箱新建一条想法（标题必填；描述 / 标签 / 优先级可选） |
 | `aitm_idea_set_status` | **写** | 改想法的状态（核心校验合法流转，非法流转会带着原因返回） |
+| `aitm_idea_set_spec` | **写** | **把规格写回想法**（DSH 里梳理出的 Markdown 落进面板「规格」栏；灵感箱会顺势推到梳理中） |
+| `aitm_idea_update` | **写** | **改写想法标题 / 正文**（`mode:"append"` 追加在原文后，适合补调研结论而不覆盖用户原话） |
 | `aitm_task_start` | **写** | 开工：想法 + 一句指令 → 起一个 AI 任务（建 worktree、跑 CLI） |
 | `aitm_task_follow_up` | **写** | **接着干**：任务被中断/跑完但没干完 → 同一 worktree 上再补一句指令（≠ 重跑） |
 | `aitm_backup_now` | **写** | 立即备份（`lean` 全量配置 / `full` 连 worktree 一起） |
 | `aitm_task_accept` | **写** | 验收任务：默认合并回基线（`merge:false` = 只记验收）；验证没过会被拒绝，除非 `acknowledgeVerifyFailure:true` |
 
-只读工具**不问**；**写工具 6 个**（`idea_create` / `idea_set_status` / `task_start` /
-`task_follow_up` / `backup_now` / `task_accept`）一律走审批闸 —— 它们会动仓库、worktree 和磁盘。
+只读工具**不问**；**写工具 8 个**（`idea_create` / `idea_set_status` / `idea_set_spec` / `idea_update` /
+`task_start` / `task_follow_up` / `backup_now` / `task_accept`）一律走审批闸 —— 它们会动想法正文、仓库、worktree 和磁盘。
 验收这条的审批卡会写明「把《标题》验收并合并到 `<基线>`」（或「只记验收（不碰 git）」、
 「验证没过也要合」），**别在不看卡的情况下点同意**。
 
@@ -186,7 +188,7 @@ node scripts/verify-dsh.mjs     # 163 项：离线渲染 + 挂点护栏（不占
                                 #        + 激活 + boot 图 + 分片送达 + inject 服务都有提供者（防 R9 式 pending 白屏） + 端到端真数据
                                 #        + meta 落盘（health / 写想法） + 写操作 fail-closed + 放行后落盘
                                 #        + 后端来法（默认进程内 L3 / AITM_URL / AITM_L3=0）+ 不留常驻后端进程
-                                #        + 工具层（真 L3 + 临时数据目录：13 个工具的输出过宿主同款 schema，含负例）
+                                #        + 工具层（真 L3 + 临时数据目录：15 个工具的输出过宿主同款 schema，含负例）
                                 #        + 原生日历的取数通道（postAction 打真 L3 / 报错抛出 / 跨源 OPTIONS 预检带 CORS 头）
                                 #        + 验收：写工具 ask / 缺参 deny / 审批卡文案；验收卡三种形态（合并 / 只记 / 被门拦下）；
                                 #          真 L3 打一次「验收不存在的任务」拿干净错误

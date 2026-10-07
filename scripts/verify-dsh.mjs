@@ -283,8 +283,8 @@ async function checkRender() {
   const cardTools = loaded.exports.__cardTools ?? [];
   const cardRegs = regs.filter((r) => r.d.name === 'tool.call.toolview');
   check(
-    '13 个工具都注册了工具卡（keyed，key = 工具名）',
-    cardTools.length === 13 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
+    '15 个工具都注册了工具卡（keyed，key = 工具名）',
+    cardTools.length === 15 && cardTools.every((t) => cardRegs.some((r) => r.d.key === t)),
     cardRegs.map((r) => r.d.key).join(', '),
   );
   check('工具卡挂在我们自己的文案表上', cardRegs.every((r) => r.d.locale === 'aitm') && Object.keys(locales.aitm?.zh ?? {}).length > 0, `ns=${Object.keys(locales).join(',')}`);
@@ -305,6 +305,13 @@ async function checkRender() {
   check('列表卡：总数 + 状态计数 + 条目', listHtml.includes('共 3 条') && listHtml.includes('inbox') && listHtml.includes('甲') && listHtml.includes('乙'));
 
   const feedHtml = render({ toolName: 'aitm_feed_today', phase: 'result', block: resultBlock({ kind: 'feed', github: 13, bilibili: 60, favorites: 2, top: [{ title: 'OpenCardboard', source: 'github' }] }) });
+  const specCardHtml = render({ toolName: 'aitm_idea_set_spec', phase: 'result', block: resultBlock({ kind: 'idea', action: 'spec', id: 'i_1', title: '导出 ICS', status: 'scoping', specChars: 1234 }) });
+  check(
+    '写回规格卡：文案 + 字数（不再只说「已进灵感箱」）',
+    specCardHtml.includes('规格已写回') && specCardHtml.includes('1234') && !specCardHtml.includes('已进灵感箱'),
+  );
+  const updCardHtml = render({ toolName: 'aitm_idea_update', phase: 'result', block: resultBlock({ kind: 'idea', action: 'update', id: 'i_1', title: '导出 ICS', status: 'scoping', changed: ['标题', '正文'] }) });
+  check('改写卡：文案 + 改了哪些字段', updCardHtml.includes('标题/正文已改') && updCardHtml.includes('标题、正文'));
   check('合集卡：三个计数 + 条目', feedHtml.includes('13') && feedHtml.includes('60') && feedHtml.includes('OpenCardboard'));
 
   const healthHtml = render({ toolName: 'aitm_health', phase: 'result', block: resultBlock({ kind: 'health', ok: true, actions: EXPECTED_ACTIONS, apiRev: 2, version: '0.1.0', dataDir: 'D:\\x\\.aitasks' }) });
@@ -981,8 +988,8 @@ async function checkWriteGate() {
   host.apply(ctx);
 
   const names = regs.tools.map((t) => t.name ?? t.definition?.name).filter(Boolean);
-  const writeTools = ['aitm_idea_create', 'aitm_idea_set_status', 'aitm_task_start', 'aitm_task_follow_up', 'aitm_backup_now', 'aitm_task_accept'];
-  check('五个写工具都注册了', writeTools.every((n) => names.includes(n)), names.join(', '));
+  const writeTools = ['aitm_idea_create', 'aitm_idea_set_status', 'aitm_task_start', 'aitm_task_follow_up', 'aitm_backup_now', 'aitm_task_accept', 'aitm_idea_set_spec', 'aitm_idea_update'];
+  check('八个写工具都注册了', writeTools.every((n) => names.includes(n)), names.join(', '));
 
   const gate = regs.hooks.find((h) => h.name === 'tools/pre-execute')?.fn;
   if (!check('注册了 tools/pre-execute 闸门', Boolean(gate))) return;
@@ -1027,6 +1034,26 @@ async function checkWriteGate() {
     /只记验收（不碰 git）/.test(String((await gate({ name: 'aitm_task_accept', arguments: { taskId: 't_x', merge: false }, signal: { aborted: false } }, allow))?.displayReason?.zh ?? '')) &&
       /验证没过也要合/.test(String((await gate({ name: 'aitm_task_accept', arguments: { taskId: 't_x', acknowledgeVerifyFailure: true }, signal: { aborted: false } }, allow))?.displayReason?.zh ?? '')),
   );
+  // 写回工具（规格 / 正文）：都是写操作，一个都不能漏过审批闸
+  const specAsk = await gate(
+    { name: 'aitm_idea_set_spec', arguments: { id: 'i_x', spec: '# 规格\n1. 目标' }, signal: { aborted: false } },
+    allow,
+  );
+  check('写回规格（aitm_idea_set_spec）→ ask', specAsk?.kind === 'ask', specAsk?.displayReason?.zh ?? '');
+  const specNoSpec = await gate({ name: 'aitm_idea_set_spec', arguments: { id: 'i_x', spec: '  ' }, signal: { aborted: false } }, allow);
+  check('写回规格缺 spec → deny', specNoSpec?.kind === 'deny');
+  const updAsk = await gate(
+    { name: 'aitm_idea_update', arguments: { id: 'i_x', description: '新的正文' }, signal: { aborted: false } },
+    allow,
+  );
+  check('改写想法（aitm_idea_update）→ ask', updAsk?.kind === 'ask', updAsk?.displayReason?.zh ?? '');
+  const updNothing = await gate({ name: 'aitm_idea_update', arguments: { id: 'i_x' }, signal: { aborted: false } }, allow);
+  check('改写想法没给字段 → deny', updNothing?.kind === 'deny');
+  const updBadMode = await gate(
+    { name: 'aitm_idea_update', arguments: { id: 'i_x', description: 'x', mode: '覆盖' }, signal: { aborted: false } },
+    allow,
+  );
+  check('改写想法 mode 写错 → deny（并说清只能是 replace/append）', updBadMode?.kind === 'deny' && /replace/.test(String(updBadMode.reason)));
   const noTask = await gate({ name: 'aitm_task_accept', arguments: {}, signal: { aborted: false } }, allow);
   check('验收缺 taskId → deny', noTask?.kind === 'deny');
 }
@@ -1121,7 +1148,7 @@ function checkNoResidentBackend() {
 }
 
 /**
- * ⑫ L4 工具（12 个）：拿真 L3 数据把每个工具的 execute() 跑一遍。
+ * ⑫ 全部工具（15 个）：拿真 L3 数据把每个工具的 execute() 跑一遍。
  *
  * 为什么能不起 DSH 也测：插件默认走**进程内 L3**，所以在 Node 里 import 插件 + 调
  * ensureBase() 就能拿到真内核；工具本体是纯函数式的（`execute(args)` → 值）。
@@ -1185,7 +1212,7 @@ async function checkTools() {
     host.apply(fakeCtx);
 
     const names = [...tools.keys()].sort();
-    check('13 个工具全部注册', names.length === 13, names.join(', '));
+    check('15 个工具全部注册', names.length === 15, names.join(', '));
 
     // 注意：`defineTool` 在注册时已经把 spec 转成 JSON Schema 存在 `tool.output.schema` 上，
     // 这里必须**直接用**它 —— 再调一次 valueSchemaSpecToJsonSchema 会报
@@ -1215,6 +1242,16 @@ async function checkTools() {
       // 负例：不存在的想法要**优雅报错**（不抛到宿主）
       ['aitm_idea_get', { id: 'i_不存在' }, (v) => v.ok === false && /不存在/.test(String(v.error))],
       ['aitm_task_start', { ideaId: 'i_不存在', instruction: 'x' }, (v) => v.ok === false && /不存在/.test(String(v.error))],
+      // 写回规格：真落库（再用 idea_get 读回来核对），灵感箱 → 梳理中（与面板「AI 梳理」同口径）
+      ['aitm_idea_set_spec', { id: a.id, spec: '# L4 规格\n1. 目标' }, (v) => v.ok === true && v.specChars > 0 && v.status === 'scoping'],
+      ['aitm_idea_get', { id: a.id }, (v) => String(v.spec ?? '').includes('L4 规格')],
+      // 改写正文：append 保留原话、title 单改标题
+      ['aitm_idea_update', { id: a.id, description: '追加的一段', mode: 'append' }, (v) => v.ok === true && Array.isArray(v.changed) && v.changed.includes('正文')],
+      ['aitm_idea_get', { id: a.id }, (v) => String(v.description ?? '').includes('追加的一段')],
+      ['aitm_idea_update', { id: a.id, title: 'L4 工具验收：把日历导出成 ICS（改名）' }, (v) => v.ok === true && /改名/.test(String(v.title))],
+      // 负例：不存在的想法要优雅报错（不抛到宿主）
+      ['aitm_idea_set_spec', { id: 'i_不存在', spec: 'x' }, (v) => v.ok === false && /不存在/.test(String(v.error))],
+      ['aitm_idea_update', { id: 'i_不存在', description: 'x' }, (v) => v.ok === false && /不存在/.test(String(v.error))],
     ];
     let allOk = true;
     const detail = [];
@@ -1243,6 +1280,13 @@ async function checkTools() {
       }
     }
     check('每个工具：输出过宿主 schema、meta 无损、业务结果对', allOk, detail.slice(0, 3).join(' | '));
+
+    // 写回规格会把「灵感箱」推到「梳理中」（与面板「AI 梳理」同口径）——上面故意验了这个联动；
+    // 下游 ⑬ 的看板计数断言按「2 灵感箱 + 1 可开发」钉死，这里把它改回灵感箱（scoping→inbox 是合法流转），
+    // 验的是行为，不是把夹具的状态搅乱。
+    await tools.get('aitm_idea_set_status').execute({ id: a.id, status: 'inbox' });
+    const restored = await tools.get('aitm_idea_get').execute({ id: a.id });
+    check('写回规格的状态联动可回退（恢复灵感箱，供下游计数断言）', restored.status === 'inbox', `status=${String(restored.status)}`);
 
     // 备份确实落了盘（不是只回了个对象）
     const backups = fs.existsSync(path.join(home, 'backups')) || fs.existsSync(path.join(home, 'data'));

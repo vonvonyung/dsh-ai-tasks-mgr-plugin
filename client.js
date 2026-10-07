@@ -141,6 +141,9 @@ window.__ModuleLoader__.load({
       'card.openPanel': '在面板里看',
       'card.idea.created': '已进灵感箱',
       'card.idea.changed': '状态已改',
+      'card.idea.updated': '标题/正文已改',
+      'card.idea.spec': '规格已写回',
+      'card.idea.specChars': '{n} 字',
       'card.idea.failed': '没写成',
       'card.idea.id': '编号',
       'card.ideaList.title': '想法',
@@ -313,6 +316,9 @@ window.__ModuleLoader__.load({
       'card.openPanel': 'Open in panel',
       'card.idea.created': 'Saved to inbox',
       'card.idea.changed': 'Status changed',
+      'card.idea.updated': 'Title/body updated',
+      'card.idea.spec': 'Spec saved back',
+      'card.idea.specChars': '{n} chars',
       'card.idea.failed': 'Not saved',
       'card.idea.id': 'id',
       'card.ideaList.title': 'Ideas',
@@ -737,7 +743,18 @@ window.__ModuleLoader__.load({
     /** 想法卡（新建 / 改状态） */
     function IdeaCard({ meta, args, t }) {
       const title = String(meta.title ?? args.title ?? '(无标题)');
-      const changed = meta.action === 'status';
+      /** 四种动作各有自己的说法：新建 / 改状态 / 改写标题正文 / 写回规格（别都写成「已改」） */
+      const action = String(meta.action ?? 'create');
+      const changed = action === 'status';
+      const specChars = Number(meta.specChars ?? 0);
+      const what =
+        action === 'status'
+          ? t('card.idea.changed')
+          : action === 'update'
+            ? t('card.idea.updated')
+            : action === 'spec'
+              ? t('card.idea.spec')
+              : t('card.idea.created');
       return jsx.jsx(Card, {
         t,
         icon: changed ? 'IconChecklistOutlineRegular' : 'IconLightOutlineRegular',
@@ -745,7 +762,13 @@ window.__ModuleLoader__.load({
         accent: true,
         children: jsx.jsxs('div', { style: T.sub, children: [
           statusChip(meta.status, t),
-          jsx.jsx('span', { children: changed ? t('card.idea.changed') : t('card.idea.created') }, 'what'),
+          jsx.jsx('span', { children: what }, 'what'),
+          action === 'spec' && specChars > 0
+            ? jsx.jsx('span', { style: { opacity: 0.75 }, children: t('card.idea.specChars', { n: String(specChars) }) }, 'chars')
+            : null,
+          Array.isArray(meta.changed) && meta.changed.length
+            ? jsx.jsx('span', { style: { opacity: 0.75 }, children: meta.changed.join('、') }, 'fields')
+            : null,
           meta.id ? jsx.jsx('span', { style: { opacity: 0.6 }, children: `${t('card.idea.id')} ${String(meta.id)}` }, 'id') : null,
         ] }, 'sub'),
       });
@@ -1041,6 +1064,8 @@ window.__ModuleLoader__.load({
       'aitm_feed_today',
       'aitm_idea_create',
       'aitm_idea_set_status',
+      'aitm_idea_set_spec',
+      'aitm_idea_update',
       'aitm_task_status',
       'aitm_task_start',
       'aitm_task_follow_up',

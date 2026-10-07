@@ -114,6 +114,23 @@ function clientRevision() {
   }
 }
 
+/**
+ * 审批卡上的「哪条想法」：查得到就用《标题》，查不到（或已删）退回 id。
+ * 这是**展示**用的辅助，绝不因为查不到标题就把审批卡住 —— 用户拍板不需要我们先把数据查全。
+ */
+async function ideaTitle(id) {
+  try {
+    const d = await call('idea.get', id);
+    return d?.idea?.title ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function titleOf(title, id) {
+  return title ? `想法《${String(title)}》` : `想法 ${id}`;
+}
+
 /** 写工具（要过审批闸）与它们的人话描述 —— 审批卡上必须一眼看出「这次会改什么」 */
 const WRITE_TOOLS = {
   aitm_idea_create: (a) => `在想法箱新建一条：「${String(a?.title ?? '(缺标题)')}」`,
@@ -121,6 +138,21 @@ const WRITE_TOOLS = {
   aitm_task_start: (a) => `开工：${String(a?.ideaId ?? '(缺想法)')} → 起一个 AI 任务（建 worktree、跑 CLI）`,
   aitm_task_follow_up: (a) => `继续任务 ${String(a?.taskId ?? '(缺任务)')}：${String(a?.instruction ?? '').slice(0, 60)}${String(a?.instruction ?? '').length > 60 ? '…' : ''}（在同一 worktree 上接着干）`,
   aitm_backup_now: (a) => `立即备份（${a?.mode === 'full' ? '全量' : '轻量'}）`,
+  // 这两条也是异步的：改的是**想法正文/规格**，审批卡上必须写出「哪条想法、改什么、多少字」——
+  // 光给个 id 用户无从判断（查不到标题就退回 id，绝不因为查不到而卡住审批）
+  aitm_idea_update: async (a) => {
+    const id = String(a?.id ?? '(缺 id)');
+    const what = [];
+    if (a?.title !== undefined) what.push(`标题 → 「${String(a.title).slice(0, 40)}」`);
+    if (a?.description !== undefined) what.push(`正文${a?.mode === 'append' ? '追加' : '替换'} ${String(a.description).length} 字`);
+    return `${titleOf(await ideaTitle(id), id)}：${what.length ? what.join('，') : '(没有可改的字段)'}`;
+  },
+  aitm_idea_set_spec: async (a) => {
+    const id = String(a?.id ?? '(缺 id)');
+    const chars = String(a?.spec ?? '').length;
+    const wantStatus = a?.status ? `，状态 → ${String(a.status)}` : '';
+    return `${titleOf(await ideaTitle(id), id)} 写回规格（${chars} 字${wantStatus}）`;
+  },
   // 这条是异步的：合并是不可逆动作，审批卡上必须写清「哪条想法、合到哪个基线」，
   // 光给个 taskId 人没法确认（查不到标题就退回 id，绝不因为查不到而卡住审批）
   aitm_task_accept: async (a) => {
@@ -900,6 +932,21 @@ const schemaIdeaDetail = {
   },
 };
 
+/** 写回想法（aitm_idea_set_spec / aitm_idea_update 共用） */
+const schemaIdeaWrite = {
+  type: 'object',
+  additionalProperties: true,
+  properties: {
+    ok: { type: 'boolean', required: true },
+    error: { type: 'string' },
+    id: { type: 'string' },
+    title: { type: 'string' },
+    status: { type: 'string' },
+    specChars: { type: 'integer' },
+    changed: { type: 'array', items: { type: 'string' } },
+  },
+};
+
 /** 任务进度 / 开（aitm_task_status、aitm_task_start 共用：一个给 task、一个给 items） */
 const schemaTaskStatus = {
   type: 'object',
@@ -1374,6 +1421,117 @@ export function apply(ctx) {
     }),
   );
 
+  /* -------- ② 写回工具：把 DSH 这边生成的正文/规格落进想法（同样过审批闸） -------- */
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_idea_set_spec',
+      description:
+        '把一份规格（Markdown）写回想法，落在面板详情页的「规格」栏（写操作，需要用户审批）。' +
+        '典型用法：你在对话里把某条想法梳理成了规格，落库让面板后续开工时用得上。' +
+        '只写规格本身，不要带「以下是规格」这类开场白；原本是「灵感箱」的想法会顺势推到「梳理中」（与面板的「AI 梳理」一致）。',
+      parameters: {
+        id: { type: 'string', description: '想法 id（可先用 aitm_idea_list 查）。', required: true },
+        spec: { type: 'string', description: '规格正文，Markdown（必填）。', required: true },
+        status: { type: 'string', description: '可选的落地状态（scoping/ready）；省略时：灵感箱 → 梳理中，其余不动。' },
+      },
+      presentCall: (a) => ({
+        card: 'generic',
+        title: `AI 任务台 · 写回规格：${String(a?.id ?? '?')}（${String(a?.spec ?? '').length} 字）`,
+        kind: 'edit',
+      }),
+      output: {
+        schema: schemaIdeaWrite,
+        presentationMeta: (_a, v) =>
+          v?.ok
+            ? { kind: 'idea', action: 'spec', id: v.id ?? null, title: v.title ?? null, status: v.status ?? null, specChars: v.specChars ?? 0 }
+            : { kind: 'idea', action: 'spec', ok: false, error: v?.error ?? '未知错误' },
+        render: (_a, v) =>
+          v.ok
+            ? [{ type: 'text', text: `规格已写回想法 ${v.title ?? v.id}（${String(v.specChars ?? 0)} 字，状态 ${v.status}）` }]
+            : [{ type: 'text', text: `没写回：${v.error}` }],
+      },
+      async execute(args) {
+        const id = String(args.id ?? '').trim();
+        const spec = String(args.spec ?? '').trim();
+        if (!id) return { ok: false, error: 'id 必填' };
+        if (!spec) return { ok: false, error: 'spec 不能为空' };
+        try {
+          const cur = (await call('idea.get', id))?.idea;
+          if (!cur) return { ok: false, error: `想法不存在：${id}` };
+          // 状态：显式给了就用给的；没给就照面板「AI 梳理」的口径（灵感箱 → 梳理中），其余保持不动
+          const status = args.status ? String(args.status) : cur.status === 'inbox' ? 'scoping' : cur.status;
+          const idea = await call('idea.update', { id, spec, status });
+          return { ok: true, id: idea?.id ?? id, title: idea?.title ?? cur.title, status: idea?.status ?? status, specChars: spec.length };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
+  ctx.tools.register(
+    defineTool({
+      name: 'aitm_idea_update',
+      description:
+        '改一条想法的标题或正文（写操作，需要用户审批）。只传要改的字段，没传的保持原样；' +
+        '正文默认整段替换，`mode: "append"` 表示追加到原文末尾（适合补一段调研结论，不覆盖用户原话）。',
+      parameters: {
+        id: { type: 'string', description: '想法 id（可先用 aitm_idea_list 查）。', required: true },
+        title: { type: 'string', description: '新标题（省略 = 不改）。' },
+        description: { type: 'string', description: '新正文；mode=replace 时整段替换，append 时追加。' },
+        mode: { type: 'string', description: '正文写入方式：replace（默认）或 append。' },
+      },
+      presentCall: (a) => ({ card: 'generic', title: `AI 任务台 · 改写想法：${String(a?.id ?? '?')}`, kind: 'edit' }),
+      output: {
+        schema: schemaIdeaWrite,
+        presentationMeta: (_a, v) =>
+          v?.ok
+            ? {
+                kind: 'idea',
+                action: 'update',
+                id: v.id ?? null,
+                title: v.title ?? null,
+                status: v.status ?? null,
+                changed: Array.isArray(v.changed) ? v.changed : [],
+              }
+            : { kind: 'idea', action: 'update', ok: false, error: v?.error ?? '未知错误' },
+        render: (_a, v) =>
+          v.ok
+            ? [{ type: 'text', text: `已改写想法 ${v.title ?? v.id}（改了：${(v.changed ?? []).join('、')}）` }]
+            : [{ type: 'text', text: `没改成：${v.error}` }],
+      },
+      async execute(args) {
+        const id = String(args.id ?? '').trim();
+        if (!id) return { ok: false, error: 'id 必填' };
+        const hasTitle = args.title !== undefined;
+        const hasDesc = args.description !== undefined;
+        if (!hasTitle && !hasDesc) return { ok: false, error: '至少给一个要改的字段：title 或 description' };
+        try {
+          const cur = (await call('idea.get', id))?.idea;
+          if (!cur) return { ok: false, error: `想法不存在：${id}` };
+          const changed = [];
+          const patch = { id };
+          if (hasTitle) {
+            patch.title = String(args.title);
+            changed.push('标题');
+          }
+          if (hasDesc) {
+            const add = String(args.description);
+            // append：读到的原文 + 空行 + 新内容；原文为空就等同替换
+            patch.description = String(args.mode ?? 'replace') === 'append' && String(cur.description ?? '').trim()
+              ? `${String(cur.description).trimEnd()}\n\n${add}`
+              : add;
+            changed.push('正文');
+          }
+          const idea = await call('idea.update', patch);
+          return { ok: true, id: idea?.id ?? id, title: idea?.title ?? cur.title, status: idea?.status ?? cur.status, changed };
+        } catch (err) {
+          return { ok: false, error: String(err?.message ?? err) };
+        }
+      },
+    }),
+  );
+
   ctx.tools.register(
     defineTool({
       name: 'aitm_task_status',
@@ -1807,6 +1965,19 @@ export function apply(ctx) {
         }
         if (exec.name === 'aitm_task_accept' && !String(a.taskId ?? '').trim()) {
           return { kind: 'deny', reason: 'aitm: aitm_task_accept 缺 taskId' };
+        }
+        if (exec.name === 'aitm_idea_update') {
+          if (!String(a.id ?? '').trim()) return { kind: 'deny', reason: 'aitm: aitm_idea_update 缺 id' };
+          if (a.title === undefined && a.description === undefined) {
+            return { kind: 'deny', reason: 'aitm: aitm_idea_update 没给 title 也没给 description（没有可改的字段）' };
+          }
+          if (a.mode !== undefined && !['replace', 'append'].includes(String(a.mode))) {
+            return { kind: 'deny', reason: `aitm: aitm_idea_update 的 mode 只能是 replace 或 append（收到「${String(a.mode)}」）` };
+          }
+        }
+        if (exec.name === 'aitm_idea_set_spec') {
+          if (!String(a.id ?? '').trim()) return { kind: 'deny', reason: 'aitm: aitm_idea_set_spec 缺 id' };
+          if (!String(a.spec ?? '').trim()) return { kind: 'deny', reason: 'aitm: aitm_idea_set_spec 的 spec 不能为空' };
         }
         if (exec.name === 'aitm_backup_now' && a.mode !== undefined && !['lean', 'full'].includes(String(a.mode))) {
           return { kind: 'deny', reason: `aitm: aitm_backup_now 的 mode 只能是 lean 或 full（收到「${String(a.mode)}」）` };
