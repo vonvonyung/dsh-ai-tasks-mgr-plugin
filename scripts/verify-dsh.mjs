@@ -337,6 +337,55 @@ async function checkRender() {
     check('徽章文字在两套主题下都够读（WCAG，次要档 4.0 / 其余 4.5）', worst.length === 0, worst.join('；') || '全部达标');
   }
 
+  {
+    /* 「详情内容要能看全，别让用户在卡片里滚」（2026-10-07 用户报）：
+       ① 正文样式里不许有限高/内滚动；② 详情页的任务区+详情卡在**同一个**滚动容器里；
+       ③ 离线渲染一张长正文的详情卡 —— 全文都必须在 HTML 里（以前 slice(0,400) + maxHeight:120）。 */
+    const Detail = loaded.exports.__components.IdeaDetailCard;
+    const long = Array.from({ length: 40 }, (_, i) => `第 ${i + 1} 行：想法正文`).join('\n') + '\n结尾行';
+    const detailHtml = renderToStaticMarkup(
+      React.createElement(Detail, {
+        t: fakeT,
+        meta: { title: '看全文', status: 'ready', description: long, tags: ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛'], tasks: [] },
+      }),
+    );
+    check(
+      '想法详情卡：正文**全文**渲染（不截断、不设高度上限）',
+      detailHtml.includes('结尾行') && detailHtml.includes('第 40 行') && !/max-height/i.test(detailHtml),
+      `${detailHtml.length} 字节 / 正文 ${long.length} 字`,
+    );
+    check(
+      '想法详情卡：标签**全部**列出（详情页是「看全」的地方，卡片列表才做省略）',
+      detailHtml.includes('辛'),
+    );
+    const csrc5 = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+    const paraBlock = /para: \{[\s\S]*?\n      \},/.exec(csrc5)?.[0] ?? '';
+    // 注释里出现这两个词是**故意**的（写着「不许再设」）⇒ 断言只看代码行
+    const paraCode = paraBlock
+      .split('\n')
+      .filter((l) => !/^\s*(\/\*|\*|\/\/)/.test(l))
+      .join('\n');
+    check(
+      '正文样式里没有 maxHeight / overflow（卡片内不再套一层滚动）',
+      paraCode.trim() !== '' && !/maxHeight|overflow/i.test(paraCode),
+      paraCode.replace(/\s+/g, ' ').trim().slice(0, 90),
+    );
+    check(
+      '三个原生视图的根都能被压缩（flex:1 1 auto + minHeight:0，否则面板里还有页签条时会撑破底部）',
+      (csrc5.match(/flex: '1 1 auto', minHeight: 0/g) ?? []).length >= 4,
+      `出现 ${(csrc5.match(/flex: '1 1 auto', minHeight: 0/g) ?? []).length} 次（看板/日历/合集/详情内容区）`,
+    );
+    check(
+      '详情页内容区是**一个**滚动容器（任务区 + 详情卡同滚；flex + minHeight:0 才滚得起来）',
+      /'data-board-body': '1'/.test(csrc5) &&
+        /style: \{ flex: '1 1 auto', minHeight: 0, overflowY: 'auto' \}, 'data-board-body'/.test(csrc5),
+    );
+    check(
+      '正文保护上限放宽到 4000 字，且截断时**明写**「已截断」（不静默吞内容）',
+      /full\.length > 4000/.test(csrc5) && /已截断/.test(csrc5),
+    );
+  }
+
   const taskHtml = render({ toolName: 'aitm_task_status', phase: 'result', block: resultBlock({ kind: 'task', task: { id: 't_9', title: '加 --json 输出', status: 'running', turns: 3, adapterId: 'cli' } }) });
   check('任务卡：标题 + 状态 + 轮次', taskHtml.includes('加 --json 输出') && taskHtml.includes('running') && taskHtml.includes('3'));
   {

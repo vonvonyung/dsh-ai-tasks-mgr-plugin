@@ -590,8 +590,8 @@ window.__ModuleLoader__.load({
         marginTop: 4,
         color: 'var(--dsw-alias-label-secondary, inherit)',
         whiteSpace: 'pre-wrap',
-        maxHeight: 120,
-        overflow: 'auto',
+        /* ⚠️ 这里**不许**再设 maxHeight / overflow（2026-10-07 用户报「详情内容显示不全、还要滚动」）：
+           正文交给详情页的滚动容器（`data-board-body`）去滚 —— 卡片里再套一层，等于让用户在小框里滚两遍。 */
       },
       row: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 5, minWidth: 0 },
       rowTitle: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -820,6 +820,10 @@ window.__ModuleLoader__.load({
     /** 想法详情卡（aitm_idea_get）：状态 + 标签 + 正文摘要 + 下面的任务 */
     function IdeaDetailCard({ meta, t }) {
       const tasks = Array.isArray(meta.tasks) ? meta.tasks : [];
+      /* 正文＝全文显示（详情页是可滚动的，2026-10-07 用户明确要求）。
+         4000 字只是**极端保护**：真超了才截，并在尾巴上明写「…（已截断）」，不静默吞内容。 */
+      const full = String(meta.description || t('card.ideaDetail.noBody'));
+      const body = full.length > 4000 ? `${full.slice(0, 4000)}…（已截断，完整内容见桌面端）` : full;
       return jsx.jsx(Card, {
         t,
         icon: 'IconListPenOutlineRegular',
@@ -829,10 +833,10 @@ window.__ModuleLoader__.load({
           jsx.jsxs('div', { style: T.sub, children: [
             statusChip(meta.status, t),
             meta.priority ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(meta.priority) }, 'p') : null,
-            (meta.tags ?? []).slice(0, 6).map((tag) => jsx.jsx('span', { style: T.chip(null), children: String(tag) }, String(tag))),
+            (meta.tags ?? []).map((tag) => jsx.jsx('span', { style: T.chip(null), children: String(tag) }, String(tag))),
             meta.repo ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(meta.repo) }, 'repo') : null,
           ] }, 'sub'),
-          jsx.jsx('div', { style: T.para, children: String(meta.description || t('card.ideaDetail.noBody')).slice(0, 400) }, 'body'),
+          jsx.jsx('div', { style: T.para, children: body }, 'body'),
           tasks.length
             ? jsx.jsxs('div', { style: { marginTop: 6 }, children: [
                 jsx.jsx('div', { style: { ...T.sub, marginTop: 0 }, children: t('card.ideaDetail.tasks') }, 'h'),
@@ -1065,7 +1069,9 @@ window.__ModuleLoader__.load({
     };
 
     const BOARD = {
-      wrap: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
+      /* flex: '1 1 auto' + minHeight: 0 ⇒ 作为面板 flex 子项被压缩时，内部滚动条才生效；
+         只写 height: '100%' 的话，面板里还有页签条要占高度，内容会把面板撑破（底部被裁掉）。 */
+      wrap: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, fontSize: 12.5 },
       toolbar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
       input: {
         flex: 1,
@@ -1592,31 +1598,34 @@ window.__ModuleLoader__.load({
           /* ── 任务区：被中断 / 失败 / 跑完的任务，「继续」或「重试」 ──
              （宿主重启会把 running 标成 failed 并写「应用重启导致中断；worktree 仍在，可直接继续对话」——
              这里就是那个「继续」的入口；内核 task.followUp 复用同一 worktree 与引擎会话）*/
-          jsx.jsxs('div', { style: { padding: '0 8px 4px' }, 'data-board-tasks': '1', children: [
-            jsx.jsx('div', { style: { fontSize: 11.5, opacity: 0.7, padding: '2px 2px 4px' }, children: t('board.tasks') }, 'h'),
-            ...(detail.meta?.tasks ?? []).map((x) =>
-              jsx.jsx(
-                BoardTaskRow,
-                {
-                  x,
-                  t,
-                  editing: taskAct?.taskId === x.id,
-                  text: taskAct?.text ?? '',
-                  onToggleEditor: () => setTaskAct(taskAct?.taskId === x.id ? null : { taskId: x.id, text: '' }),
-                  onText: (v) => setTaskAct((a) => (a ? { ...a, text: v } : { taskId: x.id, text: v })),
-                  onSend: () => void followTask(x.id),
-                  onRetry: () => void retryTask(x.id),
-                },
-                String(x.id),
+          /* ── 内容区（任务区 + 详情卡）＝ **一个**滚动容器：正文/任务再多也整块滚，不在卡片里滚 ── */
+          jsx.jsxs('div', { style: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto' }, 'data-board-body': '1', children: [
+            jsx.jsxs('div', { style: { padding: '0 8px 4px' }, 'data-board-tasks': '1', children: [
+              jsx.jsx('div', { style: { fontSize: 11.5, opacity: 0.7, padding: '2px 2px 4px' }, children: t('board.tasks') }, 'h'),
+              ...(detail.meta?.tasks ?? []).map((x) =>
+                jsx.jsx(
+                  BoardTaskRow,
+                  {
+                    x,
+                    t,
+                    editing: taskAct?.taskId === x.id,
+                    text: taskAct?.text ?? '',
+                    onToggleEditor: () => setTaskAct(taskAct?.taskId === x.id ? null : { taskId: x.id, text: '' }),
+                    onText: (v) => setTaskAct((a) => (a ? { ...a, text: v } : { taskId: x.id, text: v })),
+                    onSend: () => void followTask(x.id),
+                    onRetry: () => void retryTask(x.id),
+                  },
+                  String(x.id),
+                ),
               ),
-            ),
-          ] }, 'tasks'),
-          taskNote ? jsx.jsx('div', { style: { padding: '2px 10px 6px', fontSize: 11.5, opacity: 0.9 }, 'data-board-task-note': '1', children: taskNote }, 'tnote') : null,
-          detail.loading
-            ? jsx.jsx('div', { style: { padding: 14, opacity: 0.8 }, children: t('board.detailLoading') }, 'loading')
-            : detail.error
-              ? jsx.jsx('div', { style: { padding: 14, opacity: 0.9 }, children: `${t('card.idea.failed')}：${detail.error}` }, 'err')
-              : jsx.jsx('div', { style: { padding: '2px 6px 10px', overflowY: 'auto' }, children: jsx.jsx(IdeaDetailCard, { meta: detail.meta, t }) }, 'card'),
+            ] }, 'tasks'),
+            taskNote ? jsx.jsx('div', { style: { padding: '2px 10px 6px', fontSize: 11.5, opacity: 0.9 }, 'data-board-task-note': '1', children: taskNote }, 'tnote') : null,
+            detail.loading
+              ? jsx.jsx('div', { style: { padding: 14, opacity: 0.8 }, children: t('board.detailLoading') }, 'loading')
+              : detail.error
+                ? jsx.jsx('div', { style: { padding: 14, opacity: 0.9 }, children: `${t('card.idea.failed')}：${detail.error}` }, 'err')
+                : jsx.jsx('div', { style: { padding: '2px 6px 10px' }, children: jsx.jsx(IdeaDetailCard, { meta: detail.meta, t }) }, 'card'),
+          ] }, 'body'),
         ] });
       }
 
@@ -1763,7 +1772,9 @@ window.__ModuleLoader__.load({
     }
 
     const CAL = {
-      wrap: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
+      /* flex: '1 1 auto' + minHeight: 0 ⇒ 作为面板 flex 子项被压缩时，内部滚动条才生效；
+         只写 height: '100%' 的话，面板里还有页签条要占高度，内容会把面板撑破（底部被裁掉）。 */
+      wrap: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, fontSize: 12.5 },
       head: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
       nav: { border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '1px 7px', fontSize: 12, ...TAP_WIDE },
       month: { fontWeight: 600 },
@@ -2212,7 +2223,7 @@ window.__ModuleLoader__.load({
     }
 
     const FEED = {
-      wrap: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
+      wrap: { position: 'relative', display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, fontSize: 12.5 },
       bar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
       nav: { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
       navBtn: (active) => ({
@@ -3116,7 +3127,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { BoardTaskRow,  AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard };
+    exports.__components = { BoardTaskRow, IdeaDetailCard, AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard };
     /** 合集的口径副本（纯函数；verify-dsh 拿内核 src/shared/feed-format.ts 逐字比） */
     exports.__feedHelpers = { FEED_KIND_LABEL, FEED_BLOCKS, compactNumber, metricText, trendText, feedPrefill, markFeedRecorded };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
