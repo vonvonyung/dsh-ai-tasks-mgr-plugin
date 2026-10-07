@@ -1906,11 +1906,16 @@ window.__ModuleLoader__.load({
       meta: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 4, opacity: 0.75, fontSize: 11, flexWrap: 'wrap' },
       summary: { opacity: 0.7, marginTop: 4, fontSize: 11.5, lineHeight: 1.45, maxHeight: 50, overflow: 'hidden' },
       actions: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 'auto', paddingTop: 6 },
-      iconBtn: (on, primary) => ({
+      /**
+       * 图标按钮：**一律黑白**（用户口径，2026-10-07）——底色与字色都不上强调色，
+       * 状态交给字形本身（★/☆、✓）与 title/aria-label。
+       * 旧版：`primary` 是蓝底白字（记想法 / 已记录），已收藏是蓝星 —— 用户要求「不用颜色，改成黑白」。
+       */
+      iconBtn: () => ({
         ...TAP,
         border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.3))',
-        background: primary ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'transparent',
-        color: primary ? '#fff' : on ? 'var(--dsh-color-accent, #4a8cff)' : 'inherit',
+        background: 'transparent',
+        color: 'inherit',
         borderRadius: 6,
         cursor: 'pointer',
         padding: '0 5px',
@@ -1937,8 +1942,9 @@ window.__ModuleLoader__.load({
       const metrics = metricText(item);
       const trend = trendText(item);
       /** 图标按钮 —— 注意 jsx 的签名是 (type, props, key)：字形必须走 props.children（踩过一次：传成第三个参数 → 按钮是空的） */
-      const btn = (key, glyph, title, onClick, opts) =>
-        jsx.jsx('button', { type: 'button', style: FEED.iconBtn(Boolean(opts && opts.on), Boolean(opts && opts.primary)), title, 'aria-label': title, children: glyph, onClick: (e) => { e.stopPropagation(); onClick(); } }, key);
+      /** 动作按钮（只有图标，文案在 title/aria）：样式一律黑白，见 FEED.iconBtn 的注释 */
+      const btn = (key, glyph, title, onClick) =>
+        jsx.jsx('button', { type: 'button', style: FEED.iconBtn(), title, 'aria-label': title, children: glyph, onClick: (e) => { e.stopPropagation(); onClick(); } }, key);
       return jsx.jsxs('article', {
         style: FEED.card,
         'data-feed-card': item.key,
@@ -1975,19 +1981,20 @@ window.__ModuleLoader__.load({
             {
               style: FEED.actions,
               children: [
-                jsx.jsx('a', { style: FEED.iconBtn(false), href: item.url, target: '_blank', rel: 'noreferrer', title: t('feed.open'), 'aria-label': t('feed.open'), children: '↗' }, 'open'),
+                jsx.jsx('a', { style: FEED.iconBtn(), href: item.url, target: '_blank', rel: 'noreferrer', title: t('feed.open'), 'aria-label': t('feed.open'), children: '↗' }, 'open'),
                 jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
-                btn('star', item.starred ? '★' : '☆', item.starred ? t('feed.unstar') : t('feed.star'), () => onStar?.(item.key, !item.starred), { on: Boolean(item.starred) }),
+                // 收藏状态只用字形表达（实心 ★ = 已收藏），不上色
+                btn('star', item.starred ? '★' : '☆', item.starred ? t('feed.unstar') : t('feed.star'), () => onStar?.(item.key, !item.starred)),
                 btn('hide', '⊘', t('feed.hide'), () => onHide?.(item)),
                 item.ideaId
-                  ? btn('done', '✓', t('feed.openIdea'), () => onOpenIdea?.(item.ideaId), { primary: true })
+                  ? btn('done', '✓', t('feed.openIdea'), () => onOpenIdea?.(item.ideaId))
                   : jsx.jsxs(
                       'span',
                       {
                         style: { display: 'flex', gap: 4 },
                         children: [
                           btn('prefill', '✎', t('feed.prefill'), () => onPrefill?.(item)),
-                          btn('record', '✨', t('feed.record'), () => onRecord?.(item.key), { primary: true }),
+                          btn('record', '✨', t('feed.record'), () => onRecord?.(item.key)),
                         ],
                       },
                       'new',

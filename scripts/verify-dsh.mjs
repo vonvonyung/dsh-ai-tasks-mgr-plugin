@@ -581,6 +581,24 @@ async function checkRender() {
     React.createElement(FeedCardC, { item: { ...ghItem, starred: true, ideaId: 'idea-9' }, onRecord: () => {}, onStar: () => {}, onHide: () => {}, onPrefill: () => {}, onOpenIdea: () => {}, t: fakeT }),
   );
   check('合集卡片：收藏过是实心 ★；已记录只留「✓ 打开想法」（不再重复给记录按钮）', cardDoneHtml.includes('★') && cardDoneHtml.includes('✓') && !cardDoneHtml.includes('✨') && !cardDoneHtml.includes('✎'));
+  {
+    /* 动作条一律黑白（用户口径 2026-10-07）：
+       旧版 primary = 蓝底白字（✨ 记想法 / ✓ 已记录）、已收藏 = 蓝星 —— 现在都不上色，
+       状态只由字形表达（☆/★、✓）。断言上「整张卡里不出现强调色/白字」最稳。 */
+    const noColor = (h) => !h.includes('--dsh-color-accent') && !h.includes('rgba(80,140,255') && !h.includes('#fff');
+    const transparents = (h) => (h.match(/background:transparent/g) ?? []).length;
+    check(
+      '合集卡片动作条一律黑白：普通卡（☆/✎/✨）与已收藏卡（★/✓）里都没有强调色或白字',
+      noColor(cardHtml) && noColor(cardDoneHtml),
+      `透明底按钮 普通 ${transparents(cardHtml)} 个 / 已收藏 ${transparents(cardDoneHtml)} 个`,
+    );
+    check(
+      '「记想法」「已记录」「已收藏」都不再有底色（透明底，与打开/隐藏/预填同风格）',
+      transparents(cardHtml) >= 5 && transparents(cardDoneHtml) >= 4,
+      `普通 ${transparents(cardHtml)} / 已收藏 ${transparents(cardDoneHtml)}（分别应为 5 / 4）`,
+    );
+  }
+
   const favCardHtml = renderToStaticMarkup(
     React.createElement(FeedCardC, { item: ghItem, savedAt: Date.now() - 3600_000, onRecord: () => {}, onStar: () => {}, onHide: () => {}, onPrefill: () => {}, onOpenIdea: () => {}, t: fakeT }),
   );
