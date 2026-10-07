@@ -607,6 +607,21 @@ async function checkRender() {
   );
   const B2 = loaded.exports.__boardHelpers;
   check('收藏视图显示「收藏于 X」（与桌面同一条相对时间口径）', favCardHtml.includes(`收藏于 ${B2.relTime(Date.now() - 3600_000)}`), `收藏于 ${B2.relTime(Date.now() - 3600_000)}`);
+  {
+    // 「本页加载的是哪一版 client.js」——设置节里拿它跟服务端文件的值对（用户真机踩过「改了没生效」）
+    const single = [{ name: 'https://x/plugins/??dsh-plugin-aitm/client.js&rev=abc123def456' }];
+    const combo = [{ name: 'https://x/plugins/??dsh-plugin-aitm/client.js,other/client.js&rev=999999zzz' }];
+    const other = [{ name: 'https://x/api/events?rev=abc123def456' }, { name: 'https://x/plugins/??dsh-plugin-aitm/client.js.map&rev=abc123' }];
+    check(
+      '本页 rev 能从 resource timing 里认出来（只认单插件 URL；合并 combo / 别的资源都返回 null，不误报）',
+      B2.loadedClientRev(single) === 'abc123def456' && B2.loadedClientRev(combo) === null && B2.loadedClientRev(other) === null && B2.loadedClientRev([]) === null,
+      `单插件→${String(B2.loadedClientRev(single))} / combo→${String(B2.loadedClientRev(combo))}`,
+    );
+    check(
+      '设置节里会拿「本页 rev」跟服务端 rev 对，并给出不一致的人话',
+      clientSrc.includes('（本页一致）') && clientSrc.includes('（⚠ 本页加载的是'),
+    );
+  }
 
   const FeedPanel = loaded.exports.__components.AitmFeed;
   const feedPanelHtml = renderToStaticMarkup(React.createElement(FeedPanel, { base: null, onOpenIdea: () => {} }));

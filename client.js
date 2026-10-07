@@ -34,6 +34,43 @@ window.__ModuleLoader__.load({
         return false;
       }
     })();
+    /**
+     * 从 resource timing 的条目里认出「**本页实际加载的** client.js rev」。
+     *
+     * 为什么需要：改了 client.js 之后，最常见的假故障是「浏览器还在跑旧代码」（没 pull / DSH 没重启 /
+     * 装了另一份插件）—— 这时服务端看到的是新文件，页面跑的却是旧的，看板样式之类的改动就「不生效」。
+     * 有了这个值，设置节里能直接对上：本页 rev ≠ 服务端 rev ⇒ 页面上是旧代码。
+     *
+     * 只认**单一 id**那种 URL（`/plugins/??<pkg>/client.js&rev=xxx`）：多个插件合并成一个 combo 时，
+     * URL 上的 rev 是整包的组合 rev，不是我们这一份的，宁可返回 null 也不误报。纯函数，便于单测。
+     */
+    function loadedClientRev(entries) {
+      try {
+        for (const e of entries ?? []) {
+          const url = String(e?.name ?? '');
+          const m = /\/plugins\/\?\?([^&]*)&rev=([0-9a-zA-Z]{6,})/.exec(url);
+          if (!m) continue;
+          const ids = m[1];
+          if (!ids.endsWith('/client.js')) continue; // 只要脚本本体（sourcemap、chunk 之类都不算）
+          if (ids.includes(',')) continue; // 多插件合并的 combo：rev 是整包的，不是我们这一份的
+          return m[2];
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+
+    /** 本页实际加载的 rev（浏览器里读一次；离线渲染 / jsdom 里没有 performance 就返回 null） */
+    function loadedRevHere() {
+      try {
+        if (typeof globalThis.performance?.getEntriesByType !== 'function') return null;
+        return loadedClientRev(globalThis.performance.getEntriesByType('resource'));
+      } catch {
+        return null;
+      }
+    }
+
     /** 触屏上给点按目标加的最小尺寸（非触屏是空对象，样式逐字不变） */
     const TAP = COARSE_POINTER ? { minHeight: 30, minWidth: 30 } : {};
     const TAP_WIDE = COARSE_POINTER ? { minHeight: 30, paddingLeft: 8, paddingRight: 8 } : {};
@@ -2657,8 +2694,18 @@ window.__ModuleLoader__.load({
           row('后端', cfg.base ?? '(自动拉起)'),
           row('健康', cfg.loading ? '检查中…' : cfg.health?.ok ? `正常 · ${cfg.health.actions} 个动作` : '不可用'),
           row('版本', cfg.identity?.version ? `${cfg.identity.version}（apiRev=${String(rev ?? '?')}，需要 ≥ ${String(revRequired)}）` : cfg.base ? '旧版（health 里没有身份字段）' : '—'),
-          // 面板产物指纹：改了 client.js 却没生效时，拿 DSH 网络面板里 `&rev=` 的值和这里比一下
-          row('面板', cfg.pluginVersion ? `${cfg.pluginVersion}${cfg.clientRev ? ` · client.js rev ${cfg.clientRev}` : ''}` : '—'),
+          // 面板产物指纹：改了 client.js 却没生效时，这是最快的判据 ——
+          // `client.js rev` 是**服务端文件**当前的值（= DSH 网络面板里 &rev= 的那个值），
+          // 后面的「本页 …」是**这个页面实际加载的**那份；两者不一致 ⇒ 页面上是旧代码，重启 DSH + 硬刷。
+          row(
+            '面板',
+            (cfg.pluginVersion ? `${cfg.pluginVersion}${cfg.clientRev ? ` · client.js rev ${cfg.clientRev}` : ''}` : '—') +
+              (() => {
+                const here = loadedRevHere();
+                if (!here || !cfg.clientRev) return '';
+                return here === cfg.clientRev ? '（本页一致）' : `（⚠ 本页加载的是 ${here}，重启 DSH + 硬刷）`;
+              })(),
+          ),
           row('数据目录', cfg.identity?.dataDir ?? cfg.health?.dataDir ?? '—'),
           row('仓库', cfg.repo ?? '—'),
           row('错误', cfg.error ?? '无'),
@@ -2750,7 +2797,7 @@ window.__ModuleLoader__.load({
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
     exports.__calendarHelpers = { monthGridDays, shiftMonth, dayKeyLocal, groupByDayLocal, monthLabel, dayLabel, postAction };
     /** 给 verify 用：看板的列序 / 分桶 / 相对时间（纯计算，不依赖 React） */
-    exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime };
+    exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime, loadedClientRev };
     /** 给 verify 用：客户端半边依赖的服务名（每个都必须有提供者，否则整块 pending → 白屏） */
     exports.__clientInject = [...inject];
     /** 给 verify 用：卡片注册了哪些工具名 */

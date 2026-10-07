@@ -95,7 +95,7 @@ info(`子进程缝   ${process.env.AITM_SUBPROCESS === '0' ? '关（AITM_SUBPROC
 info(`面板产物   dist/index.html ${cfg.rendererDistPresent ? '有' : '缺 → 跑一次 npm run build'}`);
 // 客户端半边指纹：DSH 网络面板里 `/plugins/??…/client.js&rev=xxxx` 的 xxxx 应该与它一致；
 // 不一致就说明浏览器/宿主用的还是另一份 client.js（缓存、装的是旧包、或者根本没更新仓库）
-info(`面板代码   client.js rev ${cfg.clientRev ?? '(读不到)'} —— 对比 DSH 网络面板里 client.js 的 &rev=`);
+info(`面板代码   client.js rev ${cfg.clientRev ?? '(读不到)'} —— 对照：DSH 网络面板里 client.js 的 &rev=，或面板「设置 → AI 任务台 → 面板」行（那里会直接写本页是不是这一版）`);
 info(`要求 apiRev ≥ ${cfg.apiRevRequired}`);
 info(`登记表     ${cfg.registry}${fs.existsSync(cfg.registry) ? '（存在）' : '（无）'}`);
 info(`后端日志   ${cfg.backendLog}${fs.existsSync(cfg.backendLog) ? '（存在）' : '（无）'}`);
