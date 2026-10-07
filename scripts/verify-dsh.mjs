@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
+import { PassThrough } from 'node:stream';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -765,12 +766,48 @@ async function checkTools() {
   try {
     const tools = new Map();
     const effect = (f) => { const d = f(); return typeof d === 'function' ? d : () => {}; };
+    /* 假 subprocess 服务：形状照 `@deepseek-ai/dsh-subprocess` 的 SubprocessRuntime（handle.done / stdout / terminate）。
+       它的存在有两个用途：① 离线把插件那层适配器（makeSubprocessSpawner）过一遍；
+       ② 让 ⑫ 后面那条**真任务**的 CLI 进程从这条假缝里出去（证明插件确实把 ctx.subprocess 递给了内核）。 */
+    const fakeSubprocess = {
+      calls: [],
+      terminates: 0,
+      script: { lines: [], code: 0 },
+      spawn(spec) {
+        fakeSubprocess.calls.push(spec);
+        const stdout = new PassThrough();
+        const stderr = new PassThrough();
+        const stdin = new PassThrough();
+        const written = { text: '' };
+        stdin.on('data', (d) => { written.text += d.toString('utf8'); });
+        const done = new Promise((resolve) => {
+          setTimeout(() => {
+            for (const line of fakeSubprocess.script.lines) stdout.write(`${line}\n`);
+            stderr.end();
+            stdout.end(() => setTimeout(() => resolve({ exitCode: fakeSubprocess.script.code, signal: null }), 5));
+          }, 10);
+        });
+        return {
+          stdin,
+          stdout,
+          stderr,
+          control: undefined,
+          collected: {},
+          get pid() { return undefined; }, // 宿主不保证给 pid（内核的 killTree 会因此走 child.kill()）
+          done,
+          terminate() { fakeSubprocess.terminates += 1; },
+          waitForExit: async () => true,
+          written,
+        };
+      },
+    };
     const fakeCtx = {
       tools: { register: (t) => { tools.set(t.name, t); } },
       effect,
       on: () => () => {},
       inject: () => {},
       logger: { info: () => {} },
+      subprocess: fakeSubprocess, // ← 子进程接缝：插件应该把它递给内核
     };
     host = await import(`${pathToFileURL(path.join(ROOT, 'index.js')).href}?tools=${String(Date.now())}`);
     host.apply(fakeCtx);
@@ -975,6 +1012,114 @@ async function checkTools() {
       '合集预填：idea.create 走得通（标题 + 标签都落库）',
       Boolean(draftIdea?.id) && draftIdea.title === '合集预填验收：改一改再记' && JSON.stringify(draftIdea.tags) === JSON.stringify(['资讯', 'GitHub']),
       String(draftIdea?.id),
+    );
+
+    /* ---- 子进程接缝：插件把 ctx.subprocess 适配成内核要的那几面（src/core/exec.ts 的 SpawnSeam）----
+       两半都验：① 适配层本身（offline，用假 subprocess 服务）② 真开一个任务，看 CLI 进程是不是从
+       **这条假缝**出去的 —— 后者才是「runner 子进程改走 ctx.subprocess」这句话的证据。 */
+    const HH = host.__hostHelpers;
+    check('宿主半边导出自检钩子（__hostHelpers）', Boolean(HH?.makeSubprocessSpawner && HH?.pickHostSpawn));
+
+    const noSvc = HH.pickHostSpawn({});
+    check('没有 ctx.subprocess 时退回内核自带 spawn（说得出为什么）', noSvc.spawn === null && /没提供/.test(String(noSvc.why)), String(noSvc.why));
+    const offSvc = HH.pickHostSpawn({ subprocess: fakeSubprocess });
+    check('有 ctx.subprocess 时选宿主那条缝', typeof offSvc.spawn === 'function' && offSvc.why === null);
+    process.env.AITM_SUBPROCESS = '0';
+    const offSwitch = HH.pickHostSpawn({ subprocess: fakeSubprocess });
+    check('逃生开关 AITM_SUBPROCESS=0 → 仍走内核自带 spawn', offSwitch.spawn === null && /AITM_SUBPROCESS/.test(String(offSwitch.why)), String(offSwitch.why));
+    delete process.env.AITM_SUBPROCESS;
+
+    /* 适配层离线过一遍：spec 形状 / env 剥离 DSH_* / error·close / 晚注册补发 / kill→terminate */
+    fakeSubprocess.calls.length = 0;
+    fakeSubprocess.script = { lines: ['{"type":"system","subtype":"init","session_id":"s-seam"}', '{"type":"result","subtype":"success","result":"接缝里跑起来了","session_id":"s-seam"}'], code: 0 };
+    const seamSpawn = HH.makeSubprocessSpawner(fakeSubprocess);
+    const seamChild = seamSpawn({
+      file: '/usr/bin/node',
+      args: ['/tmp/fake-agent.mjs', '--x'],
+      cwd: '/tmp',
+      env: { PATH: '/usr/bin', DSH_PERMISSION_MODE: 'workspace-write', DSH_SECRET: 'x', KEEP: 'y' },
+      windowsVerbatimArguments: false,
+    });
+    const spec0 = fakeSubprocess.calls[0] ?? {};
+    check(
+      '接缝适配：argv / cwd / stdio 全给全（DSH 的接缝不打默认值）',
+      JSON.stringify(spec0.argv) === JSON.stringify(['/usr/bin/node', '/tmp/fake-agent.mjs', '--x']) &&
+        spec0.cwd === '/tmp' &&
+        spec0.stdio?.stdin === 'pipe' && spec0.stdio?.stdout === 'pipe' && spec0.stdio?.stderr === 'pipe' &&
+        typeof spec0.graceMs === 'number' && spec0.graceMs > 0,
+      `argv=${JSON.stringify(spec0.argv)} graceMs=${String(spec0.graceMs)}`,
+    );
+    check(
+      '接缝适配：env 原样传，但剥掉宿主的 DSH_*（harness 身份不隐式下发给子进程）',
+      spec0.env?.PATH === '/usr/bin' && spec0.env?.KEEP === 'y' && spec0.env?.DSH_PERMISSION_MODE === undefined && spec0.env?.DSH_SECRET === undefined,
+      JSON.stringify(spec0.env),
+    );
+    check(
+      '接缝适配：内核要的那几面都在（stdout/stderr/stdin 是流、on/kill 是函数）',
+      typeof seamChild.stdout?.on === 'function' && typeof seamChild.stderr?.on === 'function' && typeof seamChild.stdin?.write === 'function' && typeof seamChild.on === 'function' && typeof seamChild.kill === 'function',
+    );
+    let seamExit = null;
+    seamChild.on('close', (code) => { seamExit = code; });
+    await new Promise((r) => setTimeout(r, 80));
+    check('接缝适配：handle.done 结算 → 内核收到 close(exitCode)', seamExit === 0, `close=${String(seamExit)}`);
+    let lateExit = 'x';
+    seamChild.on('close', (code) => { lateExit = code; }); // 晚注册的也要补发（真实 'close' 语义）
+    check('接缝适配：事件已经发生后再 on 也要补发（内核可能在 done 之后才挂监听）', lateExit === 0, `late=${String(lateExit)}`);
+    seamChild.kill();
+    check('接缝适配：kill() → handle.terminate()（端掉宿主托管的整棵进程范围）', fakeSubprocess.terminates === 1, `terminate=${String(fakeSubprocess.terminates)}`);
+    const errSeam = HH.makeSubprocessSpawner({ spawn: () => ({ stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(), collected: {}, control: undefined, done: Promise.reject(new Error('起不来：ENOENT')), terminate: () => {}, waitForExit: async () => true }) });
+    const errChild = errSeam({ file: 'x', args: [], cwd: '/tmp', env: {} });
+    const errSeen = await new Promise((resolve) => { errChild.on('error', (e) => resolve(String(e?.message ?? e))); setTimeout(() => resolve(null), 100); });
+    check('接缝适配：handle.done 拒绝 → 内核收到 error（不是永远挂着）', /ENOENT/.test(String(errSeen)), String(errSeen));
+
+    /* 真任务：把 CLI 引擎指到一个夹具上，任务跑完 → 它的进程必须从上面那条假缝出去 */
+    const seamRepo = path.join(home, 'seam-repo');
+    fs.mkdirSync(seamRepo, { recursive: true });
+    const git = (...args) => spawnSync('git', args, { cwd: seamRepo, stdio: 'pipe' });
+    git('init', '-b', 'main');
+    git('config', 'user.email', 'verify@example.com');
+    git('config', 'user.name', 'Verify');
+    git('config', 'commit.gpgsign', 'false');
+    git('config', 'core.autocrlf', 'false');
+    fs.writeFileSync(path.join(seamRepo, 'index.ts'), 'export const answer = 41;\n');
+    git('add', '.');
+    git('commit', '-m', 'chore: init');
+    const seamBin = path.join(home, 'claude');
+    fs.copyFileSync(path.join(REPO, 'tests', 'fixtures', 'fake-agent.mjs'), seamBin);
+    fs.chmodSync(seamBin, 0o755);
+    fakeSubprocess.calls.length = 0;
+    fakeSubprocess.script = {
+      lines: [
+        '{"type":"system","subtype":"init","session_id":"s-plugin"}',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"从宿主接缝里跑起来了"}]}}',
+        '{"type":"result","subtype":"success","result":"从宿主接缝里跑起来了","session_id":"s-plugin"}',
+      ],
+      code: 0,
+    };
+    await post(boardBase, 'settings.set', { activeAdapter: 'cli', concurrency: 1, autoCommit: true, cli: { command: seamBin } });
+    const seamRepoRow = await post(boardBase, 'repo.upsert', { path: seamRepo, name: 'seam-demo' });
+    const seamIdea = await post(boardBase, 'idea.create', { title: '子进程接缝验收：跑一轮', repoId: seamRepoRow.id });
+    const seamTask = await post(boardBase, 'task.start', { ideaId: seamIdea.id, instruction: '把答案改成 42' });
+    const seamDone = await (async () => {
+      const until = Date.now() + 20_000;
+      for (;;) {
+        const got = await post(boardBase, 'task.get', seamTask.id); // 返回 {task, idea, repo}
+        const t = got?.task;
+        if (t && ['succeeded', 'failed', 'cancelled'].includes(t.status)) return t;
+        if (Date.now() > until) return t;
+        await new Promise((r) => setTimeout(r, 120));
+      }
+    })();
+    check('真任务：CLI 引擎跑完（任务状态 succeeded）', seamDone?.status === 'succeeded', `status=${String(seamDone?.status)}`);
+    check(
+      '真任务：它的进程确实从 ctx.subprocess 出去（宿主托管，不是内核自己 spawn）',
+      fakeSubprocess.calls.length === 1 && String(fakeSubprocess.calls[0]?.cwd ?? '') !== '' && JSON.stringify(fakeSubprocess.calls[0]?.stdio) === JSON.stringify({ stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' }),
+      `spawn 次数=${String(fakeSubprocess.calls.length)} cwd=${String(fakeSubprocess.calls[0]?.cwd ?? '')}`,
+    );
+    check(
+      '真任务：argv 是「引擎 + 流式旗标」，cwd 是 worktree（不是主仓库）',
+      Array.isArray(fakeSubprocess.calls[0]?.argv) && fakeSubprocess.calls[0].argv.join(' ').includes('stream-json') && !String(fakeSubprocess.calls[0]?.cwd ?? '').startsWith(seamRepo + path.sep) && fs.existsSync(String(fakeSubprocess.calls[0]?.cwd ?? '')),
+      `argv=${JSON.stringify(fakeSubprocess.calls[0]?.argv ?? [])}`,
     );
 
   } finally {

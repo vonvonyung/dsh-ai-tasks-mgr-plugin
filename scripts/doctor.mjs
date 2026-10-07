@@ -89,6 +89,9 @@ const MODE_TEXT = {
 info(`后端来法   ${cfg.backendMode}${MODE_TEXT[cfg.backendMode] ?? ''}`);
 info(`AITM_SPAWN ${cfg.spawn ? '开' : '关（0）'}${cfg.backendMode === 'l3' ? '（L3 模式下用不到）' : ''}`);
 info(`L3 产物    ${cfg.l3Bundle}${cfg.l3BundlePresent ? '（有）' : '（缺 → 跑一次 npm run build）'}`);
+// 子进程缝：宿主（DSH）提供 ctx.subprocess 时，内核起的 CLI 任务由**宿主托管**（关 DSH 一起收掉）；
+// doctor 不起 DSH，看不到宿主到底提没提供，所以这里只报环境开关的当前值。
+info(`子进程缝   ${process.env.AITM_SUBPROCESS === '0' ? '关（AITM_SUBPROCESS=0 → 内核自己 spawn）' : '开（有 ctx.subprocess 就交给宿主托管；.cmd 垫片仍走内核自己 spawn）'}`);
 info(`面板产物   dist/index.html ${cfg.rendererDistPresent ? '有' : '缺 → 跑一次 npm run build'}`);
 // 客户端半边指纹：DSH 网络面板里 `/plugins/??…/client.js&rev=xxxx` 的 xxxx 应该与它一致；
 // 不一致就说明浏览器/宿主用的还是另一份 client.js（缓存、装的是旧包、或者根本没更新仓库）

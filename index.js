@@ -149,6 +149,10 @@ const state = {
   mode: null,
   /** 进程内 L3 句柄（有它就是直连内核，call() 不走 HTTP） */
   l3: null,
+  /** cordis 的 ctx（apply 时记下）：起内核时用它现取子进程接缝 */
+  ctx: null,
+  /** 子进程接缝的说明（给日志/自检看：是宿主托管还是内核自己 spawn） */
+  spawnSeam: null,
   log: [],
   exitHook: false,
 };
@@ -493,6 +497,111 @@ async function waitHealth(base, ms, opts = {}) {
   }
 }
 
+/* ───────────────────────── 子进程接缝（把内核起的 CLI 交给宿主托管） ───────────────────────── */
+
+/**
+ * 把 DSH 的 `ctx.subprocess` 适配成**内核要的那几面**（形状见 `src/core/exec.ts` 的 `SpawnSeam`）。
+ *
+ * 为什么要有这一层：内核（L3）在**我们的进程里**跑，runner 起的 CLI 引擎（claude / codex / …）
+ * 默认由内核自己 spawn —— 那条进程 DSH 看不见：面板退出/DSH 被强杀时，正在干活的 CLI 可能活下来
+ * 继续改文件。走 `ctx.subprocess` 之后它是**宿主管托的进程范围**（会话结束统一收掉），
+ * 将来沙箱执行器也挂在这条缝上（见 docs/PROPOSAL-DSH-INTEGRATION.md 的 L3 一行）。
+ *
+ * 形状上的取舍：
+ *   · 只包内核真用到的那几面（stdout/stderr/stdin + error/close + kill），**不假装成 ChildProcess**
+ *     —— DSH 的 handle 没有 pid、没有 `killed` 位，硬套只会把这些真差异藏起来（内核的 killTree
+ *     认「没有 pid 就调 kill()」，而 kill() 在这里就是 `terminate()`＝端掉整棵托管范围，反而更准）。
+ *   · env 里**去掉 `DSH_*`**：那是宿主自己的身份变量（DSH 自己的接缝也刻意不下发给子进程），
+ *     我们透传 process.env 时会捎带上，这里按同一口径剥掉；其余原样传（CLI 要的 API Key/PATH 都在）。
+ *   · `windowsVerbatimArguments` 这一路**内核不会给我们**（`cli.ts` 里遇到 cmd.exe 垫片会自己回落到
+ *     node spawn）：DSH 的接缝是把 argv 交给 node 的 `spawn`，没有「原样交给系统」这个开关，
+ *     再被 node 引号一遍就成 `\"…\"`，cmd 不认。
+ */
+export function makeSubprocessSpawner(subprocess) {
+  return (req) => {
+    const env = {};
+    for (const [k, v] of Object.entries(req.env ?? {})) {
+      if (/^DSH_/i.test(k)) continue;
+      if (v !== undefined) env[k] = v;
+    }
+    const handle = subprocess.spawn({
+      argv: [req.file, ...(req.args ?? [])],
+      cwd: req.cwd,
+      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+      // SIGTERM→SIGKILL 的宽限期；内核自己也有超时/看门狗，这里给宿主留 3 秒收尾
+      graceMs: 3000,
+      env,
+    });
+
+    /** 极简事件面：内核只监听 error / close 两个（晚注册的也补一次，别让它等一个已经发生的事件） */
+    let settled = null;
+    const listeners = { error: [], close: [] };
+    const emit = (kind, payload) => {
+      settled = { kind, payload };
+      for (const cb of listeners[kind].splice(0)) {
+        try {
+          cb(payload);
+        } catch {
+          /* 监听器自己炸了不该传染给进程管理 */
+        }
+      }
+    };
+    handle.done.then(
+      (o) => emit('close', o && typeof o.exitCode === 'number' ? o.exitCode : 0),
+      (err) => emit('error', err instanceof Error ? err : new Error(String(err?.message ?? err))),
+    );
+
+    const child = {
+      stdout: handle.stdout,
+      stderr: handle.stderr,
+      stdin: handle.stdin,
+      pid: handle.pid,
+      killed: false,
+      on(event, cb) {
+        if (event !== 'error' && event !== 'close') return child;
+        if (settled && settled.kind === event) {
+          try {
+            cb(settled.payload);
+          } catch {
+            /* 见上 */
+          }
+          return child;
+        }
+        listeners[event].push(cb);
+        return child;
+      },
+      /** 内核的 killTree 会调它：这里等于「端掉宿主托管的整棵进程范围」 */
+      kill() {
+        child.killed = true;
+        try {
+          handle.terminate();
+        } catch {
+          /* 已经收掉了 */
+        }
+        return true;
+      },
+    };
+    return child;
+  };
+}
+
+/**
+ * 选一条子进程缝（内核启动时用）。
+ * 退回内核自带 spawn 的两种情况：`AITM_SUBPROCESS=0`（逃生开关）、宿主没提供 ctx.subprocess
+ * （老 DSH / 精简 profile）。**退回不是错误**：内核照旧自己起进程，只是不由宿主托管。
+ */
+export function pickHostSpawn(ctx) {
+  if (process.env.AITM_SUBPROCESS === '0') return { spawn: null, why: 'AITM_SUBPROCESS=0' };
+  let svc = null;
+  try {
+    svc = ctx?.subprocess ?? null;
+  } catch {
+    svc = null; // cordis 里服务还没被提供时读它会炸 —— 当作没有
+  }
+  if (!svc || typeof svc.spawn !== 'function') return { spawn: null, why: '宿主没提供 ctx.subprocess' };
+  return { spawn: makeSubprocessSpawner(svc), why: null };
+}
+
 /** 调一个 action：进程内 L3 直连内核；外部后端（AITM_URL）/旧桥走 POST /api/<action> */
 async function call(action, payload = {}) {
   const base = await ensureBase();
@@ -562,6 +671,8 @@ export async function ensureBase() {
         );
       }
 
+      // 子进程接缝：**每次起内核时现选**（服务可能是后提供的，别在 apply 时把结论钉死）
+      const seam = pickHostSpawn(state.ctx);
       const l3 = await mod.createL3({
         // 数据目录：AI_TASKS_HOME 优先；仓库模式下用仓库里的 .aitasks（Windows 真机上那份数据就在仓库内，
         // 用户不用多设任何变量），自带内核模式没有仓库可言 → 用 ~/.ai-tasks-mgr（和 Electron 回退口径一致）
@@ -572,6 +683,8 @@ export async function ensureBase() {
         host: '127.0.0.1',
         staticDir,
         version: pluginVersion(),
+        // 有 ctx.subprocess 就把 CLI 引擎起的进程交给宿主托管；没有就 null（内核自己 spawn）
+        spawn: seam.spawn,
       });
       const h = await l3.health();
       if (!compatible(h)) throw incompatibleError(l3.base, h, vendored ? '自带内核' : '进程内 L3');
@@ -668,6 +781,9 @@ export async function ensureBase() {
 }
 
 export { stop };
+
+/** 离线自检用的钩子（verify-dsh 拿假 subprocess 服务把适配层过一遍） */
+export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn };
 
 /** 诊断用：把「插件眼里的世界」原样抖出来（scripts/doctor.mjs 用；也让 verify 能断言自检逻辑） */
 export function diagnose() {
@@ -852,6 +968,9 @@ const schemaBackup = {
 };
 
 export function apply(ctx) {
+  // 子进程缝要**懒取**（ctx.subprocess 可能是后提供的），这里只留个引用给 ensureBase
+  state.ctx = ctx;
+
   /* -------- ③ 给浏览器半边递地址（客户端在浏览器里，看不见 Node 环境变量） -------- */
   ctx.inject?.(['webServer'], (webCtx) => {
     webCtx.effect(() => {
@@ -1658,8 +1777,12 @@ export function apply(ctx) {
     state.exitHook = true;
     process.once('exit', stop);
   }
+  const seamInfo = pickHostSpawn(ctx);
+  state.spawnSeam = seamInfo.spawn ? 'host' : seamInfo.why;
+  note(`[host] 子进程接缝：${seamInfo.spawn ? 'ctx.subprocess（内核起的 CLI 由宿主托管）' : `内核自己的 spawn（${seamInfo.why}）`}`);
   ctx.logger?.info?.(
     `[aitm] 已加载：v${pluginVersion()} 后端来法=${backendPlan().mode}` +
-      `（repo=${DEFAULTS.repo} url=${DEFAULTS.url || '(无)'} 自带内核=${vendorPresent() ? '有' : '无'}）`,
+      `（repo=${DEFAULTS.repo} url=${DEFAULTS.url || '(无)'} 自带内核=${vendorPresent() ? '有' : '无'}` +
+      ` 子进程缝=${seamInfo.spawn ? 'host' : seamInfo.why}）`,
   );
 }

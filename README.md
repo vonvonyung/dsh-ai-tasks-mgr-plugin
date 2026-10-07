@@ -43,6 +43,7 @@
    | `AITM_URL` | 已有实例地址；设了就不自动起（连远程/已有进程） | 空 |
    | `AITM_SPAWN` | `0` = 只连不起（连不上就报错） | `1` |
    | `AITM_L3` | `0` = 退回 M1 的 spawn 桥（保命通道） | `1`（进程内 L3） |
+   | `AITM_SUBPROCESS` | `0` = **不让宿主托管 CLI 进程**（内核自己 spawn，退回老行为） | 空（有 `ctx.subprocess` 就交给宿主） |
    | `AITM_DEBUG` | `1` = 接住子进程日志（**会让 headless 不退出，只在手工调试时开**） | 空 |
 
 ## 同事怎么装（分发版 · 一条命令）
@@ -309,6 +310,14 @@ node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起
 
 - **看板 / 日历 / 合集都已原生**（React，不再 iframe）—— M3 三页搬完；留在 iframe 里的是
   只有完整面板才有的活（对话 / 差异 / 属性），不是「还没搬」。
+- **CLI 任务的进程由宿主托管**（M3）：内核起的 CLI 引擎进程走 DSH 的 `ctx.subprocess`
+  （`dsh-plugin/index.js` 的 `makeSubprocessSpawner` → 内核的 `SpawnSeam`，见 `src/core/exec.ts`）。
+  好处：关 DSH / 会话结束时它连同进程范围一起被收掉，不留「面板退了还在改文件」的孤儿；
+  将来沙箱执行器也挂在这条缝上。**两种例外**（都按老路走，内核自己 spawn）：
+  ① Windows 上经 `cmd.exe` 转手的 `.cmd/.bat` 垫片 —— 那串参数按 Win32 引号规则定死、靠
+  `windowsVerbatimArguments` 原样交给系统，而 DSH 的接缝是把 argv 交给 node 的 `spawn`，没有这个开关
+  （再被 node 引号一遍就成 `\"…\"`，cmd 不认）；② 宿主没提供 `ctx.subprocess`（老 DSH / 精简 profile）。
+  想完全关掉这条缝：`AITM_SUBPROCESS=0`。日志/`doctor` 会说明当前走的是哪条。
 - 后端默认是**进程内 L3**（M2 第三步）：内核跑在 DSH 自己的进程里，只留一个回环端口给 iframe；
   **不再 spawn 常驻后端**（所以也没有「复用旧实例」「关不掉的孤儿进程」这两类问题了）。
   两条逃生通道：`AITM_URL=<地址>` 连外部实例（保留旧后端护栏）、`AITM_L3=0` 退回 M1 的 spawn 桥。
