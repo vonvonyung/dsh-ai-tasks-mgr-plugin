@@ -19,8 +19,8 @@
   "scripts": {
     "verify": "node scripts/verify-dsh.mjs",
     "doctor": "node scripts/doctor.mjs",
-    "pack:vendor": "node ../scripts/vendor-plugin.mjs",
-    "prepack": "node ../scripts/vendor-plugin.mjs --skip-build --no-pack"
+    "pack:vendor": "node scripts/vendor-plugin.mjs",
+    "prepack": "node scripts/vendor-plugin.mjs --skip-build --no-pack"
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.0-rc.2",
@@ -51,7 +51,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vonvonyung/ai-tasks-mgr.git",
-    "directory": "dsh-plugin"
+    "url": "git+https://github.com/vonvonyung/dsh-ai-tasks-mgr-plugin.git"
   }
 }

@@ -10,6 +10,7 @@
  * 用法：node scripts/verify-dsh.mjs        （退出码 0 = 全过）
  *      另有体检：node scripts/doctor.mjs   （不起 DSH，直接看「在哪个目录起 / 缺什么」）
  * 环境：AITM_REPO 指向 AI 任务台仓库（默认 /home/user/ai-tasks-mgr）
+ * 独立仓库（dsh-ai-tasks-mgr-plugin）里跑：**一条断言都不跑**，直接退出 1 并告诉你怎么跑全（见下面 ①）
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -72,6 +73,24 @@ try {
   /* 没有仓库 */
 }
 if (selfPkg?.name !== 'ai-tasks-mgr') {
+  /*
+   * 两种"没有仓库"要分开对待（2026-10-07 插件有了独立仓库之后才看得出来）：
+   *   ① **独立仓库模式**：插件自己是 git 检出（`dsh-ai-tasks-mgr-plugin`），但旁边没有 AI 任务台仓库
+   *      ⇒ 这个脚本会**一条断言都不跑**就结束。以前这里退出码 0，于是 `npm run verify` 看起来是绿的 ——
+   *      那是**假的**（我自己在独立 checkout 里第一次跑就被它骗了）。现在明确退出 1 + 告诉你怎么跑全。
+   *   ② **装机模式**：同事用 `dsh plugin add` 装的 tarball（没有 .git）
+   *      ⇒ 保持友好退出 0，让人去跑 doctor（那边才是装机自检）。
+   */
+  const standalone = fs.existsSync(path.join(ROOT, '.git'));
+  if (standalone) {
+    console.log('⚠ 独立仓库模式：这个 checkout 里**没有** AI 任务台仓库（推导出的仓库 = ' + REPO + '）。');
+    console.log('  所以这次**一条断言都没跑**（别把退出码 0 当成"通过"—— 现在也**不是** 0）。');
+    console.log('  完整自检（要母仓库在场，插件在主仓库里时本来就在）：');
+    console.log('    AITM_REPO=<AI 任务台仓库绝对路径> node scripts/verify-dsh.mjs');
+    console.log('    —— 或在主仓库里跑：cd dsh-plugin && node scripts/verify-dsh.mjs（163 项）');
+    console.log('  只想看这台机器能不能装/起：node scripts/doctor.mjs');
+    exitWith(1);
+  }
   console.log(`这个安装里没有 AI 任务台仓库（推导出的仓库 = ${REPO}）。`);
   console.log('verify-dsh 是**开发侧**自检（要仓库）；装机自检请跑：node scripts/doctor.mjs');
   exitWith(0);

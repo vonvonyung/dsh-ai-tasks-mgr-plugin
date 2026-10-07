@@ -1,6 +1,6 @@
 # dsh-plugin-aitm · AI 任务台 × DeepSeek Harness 插件
 
-把 AI 任务台接进 DSH 客户端的最小插件（**工具面 12 个：想法 → 规格 → 任务 → 验收 → 备份**）。
+把 AI 任务台接进 DSH 客户端的最小插件（**工具面 13 个：想法 → 规格 → 任务 → 验收 → 备份**）。
 
 ```
 ┌─ DSH 客户端 ───────────────────────────────────────────┐
@@ -101,7 +101,7 @@
 > `web.mjs`/`seed.mjs` 是 CLI 入口、插件用不上）与 `dist/` 拷进 `dsh-plugin/`（两边都在 `.gitignore` 里，
 > 不进 git），`npm pack` 按 `files` 白名单打包。装了却没内核会**打包时就报错**，不会拖到同事装机才炸。
 
-## 十二个工具（模型可调用）
+## 十三个工具（模型可调用）
 
 | 工具 | 读写 | 干的事 |
 |---|---|---|
@@ -115,11 +115,12 @@
 | `aitm_idea_create` | **写** | 在灵感箱新建一条想法（标题必填；描述 / 标签 / 优先级可选） |
 | `aitm_idea_set_status` | **写** | 改想法的状态（核心校验合法流转，非法流转会带着原因返回） |
 | `aitm_task_start` | **写** | 开工：想法 + 一句指令 → 起一个 AI 任务（建 worktree、跑 CLI） |
+| `aitm_task_follow_up` | **写** | **接着干**：任务被中断/跑完但没干完 → 同一 worktree 上再补一句指令（≠ 重跑） |
 | `aitm_backup_now` | **写** | 立即备份（`lean` 全量配置 / `full` 连 worktree 一起） |
 | `aitm_task_accept` | **写** | 验收任务：默认合并回基线（`merge:false` = 只记验收）；验证没过会被拒绝，除非 `acknowledgeVerifyFailure:true` |
 
-只读工具**不问**；**写工具 5 个**（`idea_create` / `idea_set_status` / `task_start` /
-`backup_now` / `task_accept`）一律走审批闸 —— 它们会动仓库、worktree 和磁盘。
+只读工具**不问**；**写工具 6 个**（`idea_create` / `idea_set_status` / `task_start` /
+`task_follow_up` / `backup_now` / `task_accept`）一律走审批闸 —— 它们会动仓库、worktree 和磁盘。
 验收这条的审批卡会写明「把《标题》验收并合并到 `<基线>`」（或「只记验收（不碰 git）」、
 「验证没过也要合」），**别在不看卡的情况下点同意**。
 
@@ -137,7 +138,7 @@
 
 ## 对话里的工具卡（`tool.call.toolview`，M2 第二步）
 
-十二个工具在对话流里**不是一行灰字**，而是各自一张卡（想法卡 / 详情卡 / 列表卡 / 合集卡 /
+十三个工具在对话流里**不是一行灰字**，而是各自一张卡（想法卡 / 详情卡 / 列表卡 / 合集卡 /
 健康卡 / 任务卡 / 任务列表卡 / 日历卡 / 仓库卡 / 备份卡 / **验收卡**）：
 
 - 数据怎么来：**工具侧**声明 `output.presentationMeta(args, value)` —— DSH 只对顶层调用计算一次，
@@ -150,7 +151,7 @@
 - 文案走 `ctx.locale.register('aitm', { zh, en })` + `t('card.…', { n })`（`{n}` 由 locale 服务插值）。
 - 卡片是纯 react-dom 组件（`window.__ModuleLoader__.load` 里 require react/jsx-runtime），
   官方原子件（图标 / TextShimmer / Pill）取自 `@deepseek-ai/dsh-client-ui-primitives`，**取不到就降级成纯文本样式**。
-- 十二个 key ＝ 十二个工具名；拼错永不渲染（keyed 槽只认精确 key），没认领的调用走 DSH 的通用行。
+- 十三个 key ＝ 十三个工具名；拼错永不渲染（keyed 槽只认精确 key），没认领的调用走 DSH 的通用行。
 - **原生日历**（M2 第四步）：右侧栏的「日历」不再套 iframe，而是 React 月历（`CalendarGrid` 纯展示 +
   `AitmCalendar` 取数）：42 格、周一起排、想法蓝点 / 收藏黄点、翻月 / 今天 / 刷新、当天明细。
   数据走插件自己的 `/api`（`idea.list` + `feed.get`），并订阅 `/api/events` 去抖刷新；
@@ -175,10 +176,10 @@
 ## 验证
 
 ```bash
-node scripts/verify-dist.mjs    # 12 项：**分发路径**（打 tarball → 解包 → 手工搭一个「pnpm 装完」的 profile
+node scripts/verify-dist.mjs    # 10 项：**分发路径**（打 tarball → 解包 → 手工搭一个「pnpm 装完」的 profile
                                 #        → 在没有仓库的目录起 dsh web：mode=vendor / apiRev=2 / 64 个 action /
                                 #        面板静态产物可取 → 假模型跑工具 → 真命令 dsh plugin add 之后再跑一轮）
-node scripts/verify-dsh.mjs     # 87 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
+node scripts/verify-dsh.mjs     # 163 项：离线渲染 + 挂点护栏（不占 rightbar）+ 工具卡与日历 19 项
                                 #        （12 种卡片 + 注册 / 文案 + 失败 / 运行 / 兜底 / 异常块 + 两条日历网格）
                                 #        + 旧后端护栏 + 起前自检
                                 #        + 审批闸（写→ask / 只读→放行 / 缺参→deny / 下游优先 / 取消）
@@ -194,6 +195,39 @@ node scripts/verify-dsh.mjs     # 87 项：离线渲染 + 挂点护栏（不占 
                                 #          星标写回 / 非法流转带原因）
 node scripts/doctor.mjs         # 体检（不用起 DSH）：在哪个目录起后端、缺什么、后端日志尾巴
 ```
+
+## 两个仓库的关系（2026-10-07 起）
+
+插件**开发**仍然在主仓库 `vonvonyung/ai-tasks-mgr` 的 `dsh-plugin/` 里
+（验收三角、真机清单、HANDOVER 都围着它转），同时它有了自己的**独立仓库**
+`vonvonyung/dsh-ai-tasks-mgr-plugin` —— 插件本来就该独立发版，现在先当**镜像**，等顺手了再彻底搬。
+
+同步（在**主仓库根**跑一条命令）：
+
+```bash
+node scripts/sync-plugin-repo.mjs --dry-run   # 只算不推：打印会推哪些提交 + 文件清单
+node scripts/sync-plugin-repo.mjs             # 推（远端 plugin / 分支 main）
+```
+
+它内部是 `git subtree split --prefix=dsh-plugin`：把子树重写成「它就是根目录」的提交链，
+**提交历史/作者/时间都在**，而且是增量的 —— 主仓库多一个插件提交，这条链就往后长一个，正常都是 fast-forward。
+（远端被"建仓库时勾的 README"占过，第一次要 `--force`。）
+
+**独立仓库里能干什么、不能干什么**（诚实版 —— 别在那儿看到"绿"就以为验过了）：
+
+| 事 | 主仓库里 | 独立仓库里 |
+|---|---|---|
+| 改插件（面板 / 工具 / 文档） | ✅ 在这儿改，**主仓库是唯一真相** | ✅ 能改，但改完要记得回主仓库合 |
+| 完整自检 `node scripts/verify-dsh.mjs` | ✅ **163 项** | ❌ **一条都不跑**（直接退出 1 并告诉你为什么） |
+| 体检 `node scripts/doctor.mjs` | ✅ | ✅（会告诉你没有仓库 / 或让你设 `AITM_REPO`） |
+| `npm pack` | ✅ 带内核的正式包（`release/*.tgz`） | ⚠️ 只能打**不含内核**的开发包（打印明确警告） |
+
+为什么独立仓库验不全：**内核（`dist-server/l3.mjs`）与面板产物（`dist/`）都是母仓库构建出来的**。
+「彻底切过去」那一批要解决的就是这个 —— 要么把这两样做成构建产物搬进插件仓库，
+要么让插件从 npm 拉一个已发布的宿主/内核包，两条路都得单独拍板，这批先不动。
+
+真在独立仓库里想跑完整自检：`AITM_REPO=<母仓库绝对路径> node scripts/verify-dsh.mjs`
+（母仓库在场时才成立；`aitm.patch.yml` 也要先用 `scripts/make-patch.mjs` 生成）。
 
 ## 实现要点（踩过的坑，别踩第二遍）
 
