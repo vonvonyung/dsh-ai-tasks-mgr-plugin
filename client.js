@@ -66,6 +66,86 @@ window.__ModuleLoader__.load({
       'card.running': '正在处理…',
       'card.fallback': 'AI 任务台',
       'card.noMeta': '（这次调用没有结构化数据，下面是原始返回）',
+      /* 原生合集（不走 iframe 的那块；格式化口径抄 src/shared/feed-format.ts） */
+      'feed.title': '新闻合集',
+      'feed.updatedAt': '更新于 {t}',
+      'feed.never': '还没抓过',
+      'feed.total': '· {n} 条',
+      'feed.refresh': '刷新',
+      'feed.refreshing': '抓取中…',
+      'feed.progress': '正在抓取热榜…',
+      'feed.progressHint': '首次抓两个源大约 5–15 秒，可以先看已有的数据',
+      'feed.disabled': '新闻合集已关闭 —— 在「设置 → 新闻合集」里打开后，这里会显示 GitHub 与 B站热榜。',
+      'feed.loadFailed': '没取到合集数据：{msg}',
+      'feed.retry': '重试',
+      'feed.jump': '跳到{label}，共 {n} 条',
+      'feed.collapseAll': '全部收起',
+      'feed.expandAll': '全部展开',
+      'feed.collapse': '收起这一块',
+      'feed.expand': '展开这一块',
+      'feed.state.busy': '抓取中…',
+      'feed.state.ok': '正常',
+      'feed.state.bad': '异常',
+      'feed.state.never': '未抓取',
+      'feed.failed': '{title}刷新失败',
+      'feed.staleHint': '；下面显示的还是 {t} 抓到的数据（没有清空）',
+      'feed.retryOne': '只重试{name}',
+      'feed.block.github': 'GitHub 热榜',
+      'feed.block.bilibili': 'B站热榜',
+      'feed.block.favorites': '我的收藏',
+      'feed.trendBuilding': '趋势分积累中（第 {n}/7 天，满 3 天启用趋势排序）',
+      'feed.zoneBadge': '类别：{zones} · 关注 UP {ups}',
+      'feed.zoneCount': '{n} 个分区',
+      'feed.zoneNone': '未选',
+      'feed.upFailed': '{n} 个关注 UP 抓取失败',
+      'feed.lastFailed': '上次抓取失败：{msg}。',
+      'feed.biliFooter': '数据来自 B站公开接口；一直「网络错误 / 风控」多半是网络环境问题（设置 → 新闻合集 里有「连接测试」，必要时填 SESSDATA）。关注的 UP 在设置里贴链接添加。',
+      'feed.tab.today': '今日新发现',
+      'feed.tab.week': '近 7 日持续上升',
+      'feed.tab.month': '近 30 日持续上升',
+      'feed.tab.new': '最近新建',
+      'feed.tab.ups': '关注 UP',
+      'feed.tab.ai': 'AI 相关',
+      'feed.tab.hot': '全站热门',
+      'feed.hint.today': '当日 trending 里命中 AI 关键词的模型 / 工具 / 技能',
+      'feed.hint.trend': '上榜持续性 × 名次 × star 增速',
+      'feed.hint.week': '趋势分积累中，先展示 GitHub 官方 weekly 榜',
+      'feed.hint.month': '窗口拉长到 30 天',
+      'feed.hint.new': '最近 7 天新建、star 涨得快（Search API）',
+      'feed.hint.ups': '你订阅的 UP 主最新投稿，按发布时间倒序（每人最多 10 条）',
+      'feed.hint.ai': 'B站没有 AI 分区，这一栏按关键词跨分区过滤',
+      'feed.hint.hot': '综合热门（全站）',
+      'feed.hint.zone': '官方分区榜',
+      'feed.empty': '这一类暂无条目（源可能被限流，或这段时间没有命中）。',
+      'feed.emptyGithub': '这一类暂无条目（源可能被限流，或这段时间没有命中）。',
+      'feed.emptyBili': '这一类暂无条目（源可能被限流，或这段时间没有命中）。',
+      'feed.favTotal': '共 {n} 条',
+      'feed.favAll': '全部',
+      'feed.favHint': '收藏的是条目快照：热榜换过几轮之后，这里的内容、链接和当时的数据都还在。已隐藏 {hidden} 条 —— 想恢复去「设置 → 新闻合集 → 已隐藏的条目」。',
+      'feed.favEmpty': '还没有收藏：在热榜卡片右下角点 ★，就算这条掉出热榜，也能在这里找回来。',
+      'feed.favEmptySource': '这个来源还没有收藏。',
+      'feed.savedAt': '收藏于 {t}',
+      'feed.open': '打开原文',
+      'feed.star': '收藏（热榜换掉也找得到）',
+      'feed.unstar': '取消收藏',
+      'feed.hide': '不看它（从热榜隐藏）',
+      'feed.openIdea': '已记录 → 打开想法',
+      'feed.record': '以此内容记录想法',
+      'feed.prefill': '改一改再记',
+      'feed.starred': '已收藏（热榜换掉也找得到）',
+      'feed.unstarred': '已取消收藏',
+      'feed.hidden': '已隐藏：这条不会再出现在热榜里（想恢复：设置 → 新闻合集 → 已隐藏的条目）',
+      'feed.recorded': '已记录为想法',
+      'feed.alreadyRecorded': '这条已经记录过了',
+      'feed.prefilled': '已记进想法箱：{id}',
+      'feed.refreshFailed': '刷新失败：{msg}',
+      'feed.hideTitle': '不再显示这一条？',
+      'feed.hideBody': '它会从 GitHub / B站 热榜、「关注 UP」和收藏里一起消失（收藏记录本身不删，恢复后还在）。隐藏是永久的，想找回来：设置 → 新闻合集 → 已隐藏的条目。',
+      'feed.hideConfirm': '不再显示',
+      'feed.cancel': '取消',
+      'feed.prefillTitle': '记录这条想法（可以先改）',
+      'feed.prefillTags': '标签（空格分隔）',
+      'feed.prefillSave': '记录想法',
       /* 原生看板（不走 iframe 的那块） */
       'board.search': '搜索标题 / 正文',
       'board.all': '全部状态',
@@ -138,6 +218,86 @@ window.__ModuleLoader__.load({
       'card.running': 'Working…',
       'card.fallback': 'AI tasks',
       'card.noMeta': '(no structured payload for this call; raw result below)',
+      // 合集（M3 原生第三页；卡片上的事实与桌面 FeedView 逐字一致，verify-dsh 拿内核文件比对）
+      'feed.title': 'Feed',
+      'feed.updatedAt': 'Updated {t}',
+      'feed.never': 'Never fetched',
+      'feed.total': '· {n} items',
+      'feed.refresh': 'Refresh',
+      'feed.refreshing': 'Fetching…',
+      'feed.progress': 'Fetching the boards…',
+      'feed.progressHint': 'First fetch takes ~5–15s; existing data stays visible',
+      'feed.disabled': 'Feed is off — turn it on under Settings → Feed to see GitHub & Bilibili here.',
+      'feed.loadFailed': 'Could not load the feed: {msg}',
+      'feed.retry': 'Retry',
+      'feed.jump': 'Jump to {label} ({n})',
+      'feed.collapseAll': 'Collapse all',
+      'feed.expandAll': 'Expand all',
+      'feed.collapse': 'Collapse this block',
+      'feed.expand': 'Expand this block',
+      'feed.state.busy': 'Fetching…',
+      'feed.state.ok': 'OK',
+      'feed.state.bad': 'Error',
+      'feed.state.never': 'Not fetched',
+      'feed.failed': '{title} refresh failed',
+      'feed.staleHint': '; still showing data fetched {t} (nothing was cleared)',
+      'feed.retryOne': 'Retry{name} only',
+      'feed.block.github': 'GitHub trending',
+      'feed.block.bilibili': 'Bilibili trending',
+      'feed.block.favorites': 'My favorites',
+      'feed.trendBuilding': 'Building trend score (day {n}/7; trend ranking after 3 days)',
+      'feed.zoneBadge': 'Zones: {zones} · creators {ups}',
+      'feed.zoneCount': '{n} zones',
+      'feed.zoneNone': 'none',
+      'feed.upFailed': '{n} followed creators failed',
+      'feed.lastFailed': 'Last fetch failed: {msg}. ',
+      'feed.biliFooter': 'Data comes from public Bilibili endpoints; recurring errors are usually network/anti-bot (Settings → Feed has a connection test; SESSDATA if needed). Add creators by pasting their space links in Settings.',
+      'feed.tab.today': 'New today',
+      'feed.tab.week': 'Rising (7d)',
+      'feed.tab.month': 'Rising (30d)',
+      'feed.tab.new': 'New repos',
+      'feed.tab.ups': 'Creators',
+      'feed.tab.ai': 'AI',
+      'feed.tab.hot': 'Popular',
+      'feed.hint.today': 'Today trending hits for AI keywords',
+      'feed.hint.trend': 'Persistence × rank × star velocity',
+      'feed.hint.week': 'Trend score still building; showing GitHub weekly',
+      'feed.hint.month': 'Same, over 30 days',
+      'feed.hint.new': 'Created in the last 7 days and gaining stars fast',
+      'feed.hint.ups': 'Latest uploads from the creators you follow, newest first (max 10 each)',
+      'feed.hint.ai': 'No AI zone on Bilibili — this filters all zones by keywords',
+      'feed.hint.hot': 'Popular (site-wide)',
+      'feed.hint.zone': 'Official zone ranking',
+      'feed.empty': 'Nothing here yet (rate-limited, or no hits this round).',
+      'feed.emptyGithub': 'Nothing here yet (rate-limited, or no hits this round).',
+      'feed.emptyBili': 'Nothing here yet (rate-limited, or no hits this round).',
+      'feed.favTotal': '{n} saved',
+      'feed.favAll': 'All',
+      'feed.favHint': 'Favorites keep an item snapshot: content, link and metrics stay after the board rotates. {hidden} hidden — restore under Settings → Feed.',
+      'feed.favEmpty': 'No favorites yet: hit ★ on a card — it stays here even after it drops off the board.',
+      'feed.favEmptySource': 'No favorites from this source yet.',
+      'feed.savedAt': 'Saved {t}',
+      'feed.open': 'Open',
+      'feed.star': 'Save',
+      'feed.unstar': 'Unsave',
+      'feed.hide': 'Hide',
+      'feed.openIdea': 'Recorded → open idea',
+      'feed.record': 'Record as idea',
+      'feed.prefill': 'Edit then save',
+      'feed.starred': 'Saved',
+      'feed.unstarred': 'Unsaved',
+      'feed.hidden': 'Hidden — it will not show on the boards again (restore under Settings → Feed).',
+      'feed.recorded': 'Saved as an idea',
+      'feed.alreadyRecorded': 'Already recorded',
+      'feed.prefilled': 'Saved to inbox: {id}',
+      'feed.refreshFailed': 'Refresh failed: {msg}',
+      'feed.hideTitle': 'Hide this item?',
+      'feed.hideBody': 'It disappears from every board, the creator feed and favorites (the favorite record itself is kept). Hiding is permanent; restore under Settings → Feed.',
+      'feed.hideConfirm': 'Hide',
+      'feed.cancel': 'Cancel',
+      'feed.prefillTitle': 'Record this idea (editable)',
+      'feed.prefillTags': 'Tags (space separated)',
+      'feed.prefillSave': 'Save idea',
       // 看板（M3 原生；列名与 `src/shared/labels.ts` 的 IDEA_LABEL 一一对应）
       'board.search': 'Search title / body',
       'board.all': 'All statuses',
@@ -1453,7 +1613,12 @@ window.__ModuleLoader__.load({
               },
               'bar',
             ),
-            ready && view === 'board' && !embedIdea
+            ready && view === 'feed' && !embedIdea
+              ? // 合集也是**原生 React**（M3 逐页搬家第三页：看板 → 日历 → 合集）——三块同屏、
+                // 目录条计数跳转/收起、记想法/收藏/隐藏都直接打后端；要对话/差异才走 iframe。
+                // 点已记录的 ✓ → 回看板把那条想法摊开（与日历点想法同一条路）。
+                jsx.jsx(AitmFeed, { base: cfg.base, onOpenIdea: (id) => { setBoardIdea(id); setView('board'); } })
+              : ready && view === 'board' && !embedIdea
               ? // 看板也是**原生 React**（M3：逐页搬家）——列序/文案/服务端筛选都与桌面一致，
                 // 点卡片在原地摊开详情；要对话/差异/属性再走「在完整面板里打开」的 iframe。
                 jsx.jsx(AitmBoard, { base: cfg.base, initialIdea: boardIdea, onOpenFull: (id) => setEmbedIdea(id) })
@@ -1510,6 +1675,866 @@ window.__ModuleLoader__.load({
           ],
         },
       );
+    }
+
+    /* ─────────── 原生合集（不走 iframe） ─────────── */
+
+    /**
+     * 格式化口径**抄内核**（`src/shared/feed-format.ts` 的 FEED_KIND_LABEL / compactNumber /
+     * metricText / trendText）：插件是独立包、不能 import 仓库源码，所以这里是副本 ——
+     * 改内核那份时记得同步（`verify-dsh` 有断言：类别名逐字比 + 固定样例上比输出）。
+     * 结论面一句话：**卡片上看到的事实，与桌面面板逐字一致**，同一张卡在两处不显示成两个样子。
+     */
+    const FEED_KIND_LABEL = { model: '模型', tool: '工具', skill: '技能', repo: '项目', video: '视频' };
+
+    /** 数字按中文习惯缩写：12345 → 1.2 万；123456789 → 1.2 亿（GitHub 那边仍用千分位） */
+    function compactNumber(n, opts) {
+      if (!Number.isFinite(n)) return '—';
+      if (opts && opts.wan) {
+        if (n >= 100000000) return `${(n / 100000000).toFixed(1)} 亿`;
+        if (n >= 10000) return `${(n / 10000).toFixed(1)} 万`;
+        return String(n);
+      }
+      return n.toLocaleString('en-US');
+    }
+
+    /** 指标行：只有真有的指标才出现（缺 = 不显示，不写 0） */
+    function metricText(item) {
+      const m = item.metrics ?? {};
+      const parts = [];
+      if (item.source === 'github') {
+        if (m.stars != null) parts.push(`★ ${compactNumber(m.stars)}`);
+        if (m.starsToday != null) parts.push(`+${compactNumber(m.starsToday)}/日`);
+        if (m.starsWeek != null) parts.push(`+${compactNumber(m.starsWeek)}/周`);
+        if (m.starsMonth != null) parts.push(`+${compactNumber(m.starsMonth)}/月`);
+        if (m.forks != null) parts.push(`⑂ ${compactNumber(m.forks)}`);
+      } else {
+        if (m.views != null) parts.push(`播放 ${compactNumber(m.views, { wan: true })}`);
+        if (m.likes != null) parts.push(`赞 ${compactNumber(m.likes, { wan: true })}`);
+        if (m.danmaku != null) parts.push(`弹幕 ${compactNumber(m.danmaku, { wan: true })}`);
+      }
+      return parts.join(' · ');
+    }
+
+    /** 趋势一行（7/30 日榜用）：只在有数据时出现 */
+    function trendText(item) {
+      const t = item.trend;
+      if (!t || !t.ready) return null;
+      const bits = [`上榜 ${Math.round(t.appearRatio * 100)}%`];
+      if (t.avgRank != null) bits.push(`均名 #${t.avgRank}`);
+      if (t.starVelocity != null) bits.push(`+${compactNumber(Math.round(t.starVelocity))}/日`);
+      return bits.join(' · ');
+    }
+
+    /**
+     * 「改一改再记」的草稿：与桌面卡片上那颗铅笔按钮**同一份预填**（标题 + 来源行 + 数据 + 简介）。
+     * 不做「以此内容记录」的完整正文（那条走 `feed.record`，由内核生成）。
+     */
+    function feedPrefill(item) {
+      const metrics = metricText(item);
+      const description = [
+        `来源：[${item.title}](${item.url})`,
+        metrics ? `数据：${metrics}` : '',
+        item.summary ? `\n${item.summary}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      return { title: String(item.title ?? ''), description, tags: ['资讯', item.source === 'github' ? 'GitHub' : 'B站'] };
+    }
+
+    /** 记录成功后就地标记（不重拉整份快照）——与桌面 store.recordFeedItem 的本地标记同一做法 */
+    function markFeedRecorded(snapshot, key, ideaId) {
+      const mark = (list) => (list ?? []).map((it) => (it.key === key ? { ...it, ideaId } : it));
+      return {
+        ...snapshot,
+        github: { ...snapshot.github, today: mark(snapshot.github.today), week: mark(snapshot.github.week), month: mark(snapshot.github.month), newRepos: mark(snapshot.github.newRepos) },
+        bilibili: {
+          ...snapshot.bilibili,
+          hot: mark(snapshot.bilibili.hot),
+          ai: mark(snapshot.bilibili.ai),
+          zones: (snapshot.bilibili.zones ?? []).map((z) => ({ ...z, items: mark(z.items) })),
+          ups: (snapshot.bilibili.ups ?? []).map((u) => ({ ...u, items: mark(u.items) })),
+        },
+      };
+    }
+
+    /** 三个块的固定顺序与名字：目录条与块标题都由它派生（内核 FeedView 的 BLOCKS 同源） */
+    const FEED_BLOCKS = [
+      { id: 'github', label: 'GitHub 热榜', short: 'GitHub' },
+      { id: 'bilibili', label: 'B站热榜', short: 'B站' },
+      { id: 'favorites', label: '我的收藏', short: '收藏' },
+    ];
+
+    const FEED_COLLAPSE_KEY = 'aitm.feed.collapsed';
+
+    function readFeedCollapsed() {
+      const base = { github: false, bilibili: false, favorites: false };
+      try {
+        const raw = localStorage.getItem(FEED_COLLAPSE_KEY);
+        if (!raw) return base;
+        const parsed = JSON.parse(raw);
+        return { github: Boolean(parsed.github), bilibili: Boolean(parsed.bilibili), favorites: Boolean(parsed.favorites) };
+      } catch {
+        return base;
+      }
+    }
+
+    function saveFeedCollapsed(v) {
+      try {
+        localStorage.setItem(FEED_COLLAPSE_KEY, JSON.stringify(v));
+      } catch {
+        /* 隐私模式/存储被禁：收起状态记不住不影响使用 */
+      }
+    }
+
+    const FEED = {
+      wrap: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
+      bar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
+      nav: { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
+      navBtn: (active) => ({
+        border: `1px solid ${active ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.35))'}`,
+        background: 'transparent',
+        color: 'inherit',
+        borderRadius: 999,
+        padding: '1px 8px',
+        fontSize: 11.5,
+        cursor: 'pointer',
+      }),
+      btn: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '2px 8px', fontSize: 12 },
+      body: { flex: 1, minHeight: 0, overflow: 'auto', padding: '6px 8px 12px' },
+      block: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.28))', borderRadius: 8, marginBottom: 8, overflow: 'hidden' },
+      blockHead: { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', flexWrap: 'wrap' },
+      chip: (tone) => ({
+        fontSize: 11,
+        padding: '0 6px',
+        borderRadius: 999,
+        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.28))',
+        opacity: 0.9,
+        color: tone === 'bad' ? 'var(--dsh-color-danger, #d35)' : tone === 'warn' ? '#bb8009' : tone === 'ok' ? 'var(--dsh-color-success, #2ea043)' : undefined,
+      }),
+      collapse: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 12, opacity: 0.75, padding: '0 2px' },
+      tabs: { display: 'flex', gap: 4, padding: '0 8px 6px', flexWrap: 'wrap' },
+      tab: (active) => ({
+        border: '1px solid transparent',
+        background: active ? 'var(--dsh-color-fill, rgba(127,127,127,0.12))' : 'transparent',
+        color: 'inherit',
+        borderRadius: 6,
+        cursor: 'pointer',
+        padding: '1px 7px',
+        fontSize: 11.5,
+        opacity: active ? 1 : 0.75,
+      }),
+      hint: { opacity: 0.65, padding: '0 8px 6px', fontSize: 11.5, lineHeight: 1.5 },
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(232px, 1fr))', gap: 6, padding: '0 8px 8px' },
+      card: {
+        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.22))',
+        borderRadius: 8,
+        padding: '6px 7px',
+        background: 'var(--dsh-color-fill, rgba(127,127,127,0.06))',
+        display: 'flex',
+        flexDirection: 'column',
+        minWidth: 0,
+      },
+      cardTitle: { display: 'flex', alignItems: 'baseline', gap: 4, lineHeight: 1.35, wordBreak: 'break-word' },
+      title: { color: 'inherit', flex: 1, textDecoration: 'none', cursor: 'pointer' },
+      kind: { fontSize: 10.5, opacity: 0.75, flex: 'none' },
+      meta: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 4, opacity: 0.75, fontSize: 11, flexWrap: 'wrap' },
+      summary: { opacity: 0.7, marginTop: 4, fontSize: 11.5, lineHeight: 1.45, maxHeight: 50, overflow: 'hidden' },
+      actions: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 'auto', paddingTop: 6 },
+      iconBtn: (on, primary) => ({
+        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.3))',
+        background: primary ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'transparent',
+        color: primary ? '#fff' : on ? 'var(--dsh-color-accent, #4a8cff)' : 'inherit',
+        borderRadius: 6,
+        cursor: 'pointer',
+        padding: '0 5px',
+        fontSize: 12,
+        lineHeight: '18px',
+        textDecoration: 'none',
+        flex: 'none',
+      }),
+      fail: { display: 'flex', alignItems: 'center', gap: 5, margin: '0 8px 6px', padding: '4px 6px', borderRadius: 6, background: 'rgba(209,36,47,0.10)', color: 'var(--dsh-color-danger, #d35)', fontSize: 11.5 },
+      progress: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 10px 6px', opacity: 0.85, fontSize: 11.5, flex: 'none' },
+      overlay: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20, padding: 8 },
+      dialog: { background: 'var(--dsh-color-bg-elevated, #fff)', border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', borderRadius: 8, padding: 10, width: 'min(100%, 400px)', boxShadow: '0 6px 24px rgba(0,0,0,0.25)' },
+      input: { width: '100%', boxSizing: 'border-box', background: 'transparent', color: 'inherit', border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', borderRadius: 6, padding: '3px 6px', fontSize: 12, outline: 'none', marginTop: 4, fontFamily: 'inherit' },
+    };
+
+    /**
+     * 一张合集卡片（纯展示；动作回调都从外面给）—— 结构对齐桌面 `FeedView.tsx` 的 FeedCard。
+     * 名字带 Item：工具卡那边已经有一个 `FeedCard`（对话里的合集卡），函数声明提升会互相顶掉（踩过一次）。
+     * 名次 / 标题（外链）/ 类别 / 来源 / 副标题 / 指标 / 趋势 / 简介 / 收藏时间 / 底部动作条。
+     * 动作按钮只留图标（R4），文案走 title/aria。
+     */
+    function FeedItemCard(props) {
+      const { item, savedAt, onRecord, onOpenIdea, onStar, onHide, onPrefill, t } = props;
+      const metrics = metricText(item);
+      const trend = trendText(item);
+      /** 图标按钮 —— 注意 jsx 的签名是 (type, props, key)：字形必须走 props.children（踩过一次：传成第三个参数 → 按钮是空的） */
+      const btn = (key, glyph, title, onClick, opts) =>
+        jsx.jsx('button', { type: 'button', style: FEED.iconBtn(Boolean(opts && opts.on), Boolean(opts && opts.primary)), title, 'aria-label': title, children: glyph, onClick: (e) => { e.stopPropagation(); onClick(); } }, key);
+      return jsx.jsxs('article', {
+        style: FEED.card,
+        'data-feed-card': item.key,
+        children: [
+          jsx.jsxs(
+            'div',
+            {
+              style: FEED.cardTitle,
+              children: [
+                item.rank != null ? jsx.jsx('span', { style: { opacity: 0.6, flex: 'none' }, children: `#${String(item.rank)}` }, 'rank') : null,
+                jsx.jsx('a', { style: FEED.title, href: item.url, target: '_blank', rel: 'noreferrer', title: String(item.title ?? ''), children: String(item.title ?? '(无标题)') }, 'title'),
+                jsx.jsx('span', { style: FEED.kind, children: FEED_KIND_LABEL[item.kind] ?? String(item.kind ?? '') }, 'kind'),
+              ].filter(Boolean),
+            },
+            'head',
+          ),
+          jsx.jsxs(
+            'div',
+            {
+              style: FEED.meta,
+              children: [
+                jsx.jsx('span', { children: item.source === 'github' ? 'GitHub' : 'B站' }, 'src'),
+                item.subtitle ? jsx.jsx('span', { children: String(item.subtitle) }, 'sub') : null,
+                metrics ? jsx.jsx('span', { children: metrics }, 'metrics') : null,
+                trend ? jsx.jsx('span', { children: trend }, 'trend') : null,
+              ].filter(Boolean),
+            },
+            'meta',
+          ),
+          item.summary ? jsx.jsx('div', { style: FEED.summary, children: String(item.summary).slice(0, 180) }, 'sum') : null,
+          savedAt ? jsx.jsx('div', { style: { ...FEED.meta, opacity: 0.6 }, children: t('feed.savedAt', { t: relTime(savedAt) }) }, 'saved') : null,
+          jsx.jsxs(
+            'div',
+            {
+              style: FEED.actions,
+              children: [
+                jsx.jsx('a', { style: FEED.iconBtn(false), href: item.url, target: '_blank', rel: 'noreferrer', title: t('feed.open'), 'aria-label': t('feed.open'), children: '↗' }, 'open'),
+                jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+                btn('star', item.starred ? '★' : '☆', item.starred ? t('feed.unstar') : t('feed.star'), () => onStar?.(item.key, !item.starred), { on: Boolean(item.starred) }),
+                btn('hide', '⊘', t('feed.hide'), () => onHide?.(item)),
+                item.ideaId
+                  ? btn('done', '✓', t('feed.openIdea'), () => onOpenIdea?.(item.ideaId), { primary: true })
+                  : jsx.jsxs(
+                      'span',
+                      {
+                        style: { display: 'flex', gap: 4 },
+                        children: [
+                          btn('prefill', '✎', t('feed.prefill'), () => onPrefill?.(item)),
+                          btn('record', '✨', t('feed.record'), () => onRecord?.(item.key), { primary: true }),
+                        ],
+                      },
+                      'new',
+                    ),
+              ].filter(Boolean),
+            },
+            'actions',
+          ),
+        ].filter(Boolean),
+      });
+    }
+
+    /**
+     * 原生合集（M3 逐页搬家第三页：看板 → 日历 → 合集）。
+     *
+     * 与桌面 `FeedView.tsx` 同一份口径：三块同屏（GitHub / B站 / 我的收藏）+ 目录条（计数、跳转、
+     * 全部收起）+ 每块单独收起（`localStorage` 记着，重启后还在）+ 抓取进度与失败条。
+     * 数据面走面板同款 `postAction`：`feed.get` 快照、`feed.refresh`（可只刷一源）、
+     * `feed.record`（记进想法箱）、`feed.star`/`unstar`、`feed.hide`（隐藏前必须确认）。
+     * 事件流订阅 `/api/events` 去抖 400ms —— 对话里记想法 / 别处收藏之后，这里自己跟一次。
+     */
+    function AitmFeed({ base, onOpenIdea }) {
+      const [data, setData] = react.useState({ loading: true, snapshot: null, settings: null, error: null });
+      const [note, setNote] = react.useState(null);
+      const [busy, setBusy] = react.useState(false);
+      const [collapsed, setCollapsed] = react.useState(readFeedCollapsed);
+      const [active, setActive] = react.useState('github');
+      const [favSource, setFavSource] = react.useState('all');
+      const [tabOf, setTabOf] = react.useState({ github: 'today', bilibili: 'ai' });
+      const [pendingHide, setPendingHide] = react.useState(null);
+      const [draft, setDraft] = react.useState(null);
+      const bodyRef = react.useRef(null);
+      const loadRef = react.useRef(null);
+      const t = (k, vars) => String(zh[k] ?? en[k] ?? k).replace(/\{(\w+)\}/g, (m, n) => (vars && n in vars ? String(vars[n]) : m));
+
+      const load = react.useCallback(async () => {
+        if (!base) return;
+        try {
+          const [snapshot, settings] = await Promise.all([
+            postAction(base, 'feed.get', { refresh: false }),
+            // 设置只用来显示「类别 / 关注 UP」这一行徽标；取不到不影响看榜单
+            postAction(base, 'settings.get', {}).catch(() => null),
+          ]);
+          setData({ loading: false, snapshot, settings, error: null });
+        } catch (err) {
+          setData((d) => ({ ...d, loading: false, error: String(err?.message ?? err) }));
+        }
+      }, [base]);
+
+      react.useEffect(() => {
+        void load();
+      }, [load]);
+
+      loadRef.current = load;
+
+      // 事件流：抓取进度（feed start/done）+ 记想法/收藏/隐藏都会广播 → 400ms 去抖后跟一次
+      react.useEffect(() => {
+        if (!base || typeof EventSource !== 'function') return undefined;
+        let timer = null;
+        let es = null;
+        try {
+          es = new EventSource(`${base}/api/events`);
+          es.onmessage = (ev) => {
+            try {
+              const e = JSON.parse(ev.data);
+              if (e && e.type === 'feed') setBusy(e.phase === 'start');
+            } catch {
+              /* 解析不了就当普通事件 */
+            }
+            if (timer) return;
+            timer = setTimeout(() => {
+              timer = null;
+              void loadRef.current?.();
+            }, 400);
+          };
+        } catch {
+          /* 不支持就算了，反正有「刷新」 */
+        }
+        return () => {
+          if (timer) clearTimeout(timer);
+          try {
+            es?.close();
+          } catch {
+            /* 已关 */
+          }
+        };
+      }, [base]);
+
+      const snap = data.snapshot;
+      const gh = snap?.sources?.github;
+      const bili = snap?.sources?.bilibili;
+      const refreshing = busy || Boolean(gh?.refreshing) || Boolean(bili?.refreshing) || Boolean(snap?.refreshing);
+      const enabled = data.settings?.feed?.enabled ?? true;
+      const favorites = snap?.favorites ?? [];
+
+      const refresh = async (source) => {
+        if (!base) return;
+        setBusy(true);
+        setNote(null);
+        try {
+          const snapshot = await postAction(base, 'feed.refresh', source ? { source } : {});
+          setData((d) => ({ ...d, snapshot, error: null }));
+        } catch (err) {
+          setNote(t('feed.refreshFailed', { msg: String(err?.message ?? err) }));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const applySnapshot = (snapshot, okText) => {
+        setData((d) => ({ ...d, snapshot }));
+        setNote(okText);
+      };
+
+      const star = async (key, starring) => {
+        try {
+          applySnapshot(await postAction(base, starring ? 'feed.star' : 'feed.unstar', { key }), starring ? t('feed.starred') : t('feed.unstarred'));
+        } catch (err) {
+          setNote(String(err?.message ?? err));
+        }
+      };
+
+      const hide = async (key) => {
+        try {
+          applySnapshot(await postAction(base, 'feed.hide', { key }), t('feed.hidden'));
+        } catch (err) {
+          setNote(String(err?.message ?? err));
+        }
+      };
+
+      const record = async (key) => {
+        try {
+          const r = await postAction(base, 'feed.record', { key });
+          setData((d) => (d.snapshot ? { ...d, snapshot: markFeedRecorded(d.snapshot, key, r.ideaId) } : d));
+          setNote(r.created ? t('feed.recorded') : t('feed.alreadyRecorded'));
+        } catch (err) {
+          setNote(String(err?.message ?? err));
+        }
+      };
+
+      const createIdea = async () => {
+        if (!draft || !String(draft.title ?? '').trim()) return;
+        try {
+          const idea = await postAction(base, 'idea.create', {
+            title: String(draft.title).trim(),
+            ...(draft.description ? { description: draft.description } : {}),
+            ...(draft.tags && draft.tags.length ? { tags: draft.tags } : {}),
+          });
+          setDraft(null);
+          setNote(t('feed.prefilled', { id: String(idea?.id ?? '') }));
+        } catch (err) {
+          setNote(String(err?.message ?? err));
+        }
+      };
+
+      const toggleBlock = (id, next) =>
+        setCollapsed((prev) => {
+          const v = { ...prev, [id]: next == null ? !prev[id] : next };
+          saveFeedCollapsed(v);
+          return v;
+        });
+
+      const jumpTo = (id) => {
+        setActive(id);
+        if (collapsed[id]) toggleBlock(id, false);
+        try {
+          const el = bodyRef.current?.querySelector(`[data-feed-block="${id}"]`);
+          if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch {
+          /* 滚动失败不影响用 */
+        }
+      };
+
+      const ghTabs = [
+        { id: 'today', label: t('feed.tab.today'), hint: t('feed.hint.today'), items: snap?.github?.today ?? [] },
+        { id: 'week', label: t('feed.tab.week'), hint: gh && gh.trendDays >= 3 ? t('feed.hint.trend') : t('feed.hint.week'), items: snap?.github?.week ?? [] },
+        { id: 'month', label: t('feed.tab.month'), hint: t('feed.hint.month'), items: snap?.github?.month ?? [] },
+        { id: 'new', label: t('feed.tab.new'), hint: t('feed.hint.new'), items: snap?.github?.newRepos ?? [] },
+      ];
+      const upAll = (snap?.bilibili?.ups ?? []).flatMap((u) => u.items ?? []);
+      const biliTabs = [
+        ...((snap?.bilibili?.ups ?? []).length
+          ? [{ id: 'ups', label: t('feed.tab.ups'), hint: t('feed.hint.ups'), items: [...upAll].sort((a, b) => (b.publishedAt ?? 0) - (a.publishedAt ?? 0)).slice(0, 80) }]
+          : []),
+        { id: 'ai', label: t('feed.tab.ai'), hint: t('feed.hint.ai'), items: snap?.bilibili?.ai ?? [] },
+        { id: 'hot', label: t('feed.tab.hot'), hint: t('feed.hint.hot'), items: snap?.bilibili?.hot ?? [] },
+        ...(snap?.bilibili?.zones ?? []).map((z) => ({ id: `zone-${String(z.tid)}`, label: `${z.name} 排行榜`, hint: t('feed.hint.zone'), items: z.items ?? [] })),
+      ];
+
+      /** 当前页签：设置变了（新订阅分区 / 取消订阅）原来的页签可能没了 —— 回落到第一个 */
+      const activeTabOf = (tabs, key) => (tabs.some((x) => x.id === tabOf[key]) ? tabOf[key] : (tabs[0]?.id ?? ''));
+      const tabItems = (tabs, key) => tabs.find((x) => x.id === activeTabOf(tabs, key))?.items ?? [];
+      const setTab = (key, id) => setTabOf((prev) => ({ ...prev, [key]: id }));
+
+      const counts = {
+        github: (snap?.github?.today?.length ?? 0) + (snap?.github?.week?.length ?? 0) + (snap?.github?.month?.length ?? 0) + (snap?.github?.newRepos?.length ?? 0),
+        bilibili: (snap?.bilibili?.hot?.length ?? 0) + (snap?.bilibili?.ai?.length ?? 0) + (snap?.bilibili?.zones ?? []).reduce((a, z) => a + (z.items ?? []).length, 0) + upAll.length,
+        favorites: favorites.length,
+      };
+      const total = counts.github + counts.bilibili;
+      const allCollapsed = collapsed.github && collapsed.bilibili && collapsed.favorites;
+      const zoneNames = (snap?.bilibili?.zones ?? []).map((z) => z.name).join('、');
+      const pickedZones = (data.settings?.feed?.biliZones ?? []).length;
+      const upMids = (data.settings?.feed?.upMids ?? []).length;
+      const upErrors = (snap?.bilibili?.ups ?? []).filter((u) => u.error);
+      const favCards = favorites.filter((f) => favSource === 'all' || f.item?.source === favSource).map((f) => ({ item: f.item, savedAt: f.savedAt }));
+      const showBlocks = enabled && !(data.error && !snap);
+      const cardProps = { onRecord: record, onStar: star, onHide: (item) => setPendingHide(item), onPrefill: (item) => setDraft(feedPrefill(item)), onOpenIdea, t };
+
+      const sourceChip = (state) =>
+        state
+          ? jsx.jsx(
+              'span',
+              {
+                style: FEED.chip(state.refreshing ? 'warn' : state.ok ? 'ok' : state.error ? 'bad' : null),
+                title: state.error ?? undefined,
+                children: state.refreshing ? t('feed.state.busy') : state.ok ? t('feed.state.ok') : state.error ? t('feed.state.bad') : t('feed.state.never'),
+              },
+              'chip',
+            )
+          : null;
+
+      /**
+       * 一块（GitHub / B站 / 收藏共用）：块头（标题 + 状态点 + 徽标 + 收起）+ 失败条 +
+       * 页签 + 提示行 + 卡片网格。收起后只剩块头 —— 但**失败条照显示**（出问题不该被折叠藏起来）。
+       */
+      const renderBlock = (id, title, state, badges, extra, footer, onRetry) => {
+        const isCollapsed = collapsed[id];
+        const failed = state && !state.refreshing && state.ok === false && state.error;
+        const cards = extra.cards ?? [];
+        const tabs = extra.tabs ?? null;
+        return jsx.jsxs(
+          'section',
+          {
+            style: FEED.block,
+            'data-feed-block': id,
+            children: [
+              jsx.jsxs(
+                'div',
+                {
+                  style: FEED.blockHead,
+                  children: [
+                    jsx.jsx('b', { children: title }, 'title'),
+                    sourceChip(state),
+                    ...(badges ?? []).filter(Boolean),
+                    extra.headExtra ?? null,
+                    jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+                    jsx.jsx(
+                      'button',
+                      {
+                        type: 'button',
+                        style: FEED.collapse,
+                        title: isCollapsed ? t('feed.expand') : t('feed.collapse'),
+                        'aria-expanded': !isCollapsed,
+                        onClick: () => toggleBlock(id),
+                        children: isCollapsed ? '▸' : '▾',
+                      },
+                      'collapse',
+                    ),
+                  ],
+                },
+                'head',
+              ),
+              failed
+                ? jsx.jsxs(
+                    'div',
+                    {
+                      style: FEED.fail,
+                      role: 'alert',
+                      children: [
+                        jsx.jsx('span', { style: { flex: 1 }, children: `${t('feed.failed', { title })}：${String(state.error)}${state.fetchedAt ? t('feed.staleHint', { t: relTime(state.fetchedAt) }) : ''}` }, 'msg'),
+                        jsx.jsx('button', { type: 'button', style: FEED.btn, onClick: onRetry, children: t('feed.retryOne', { name: id === 'github' ? ' GitHub' : ' B站' }) }, 'retry'),
+                      ],
+                    },
+                    'fail',
+                  )
+                : null,
+              isCollapsed
+                ? null
+                : jsx.jsxs(
+                    'div',
+                    {
+                      children: [
+                        tabs
+                          ? jsx.jsx(
+                              'div',
+                              {
+                                style: FEED.tabs,
+                                role: 'tablist',
+                                children: tabs.map((tb) =>
+                                  jsx.jsxs(
+                                    'button',
+                                    {
+                                      type: 'button',
+                                      role: 'tab',
+                                      'aria-selected': extra.activeTab === tb.id,
+                                      style: FEED.tab(extra.activeTab === tb.id),
+                                      onClick: () => extra.onTab?.(tb.id),
+                                      children: [tb.label, jsx.jsx('span', { style: { opacity: 0.6, marginLeft: 4 }, children: String(tb.items.length) }, 'n')],
+                                    },
+                                    tb.id,
+                                  ),
+                                ),
+                              },
+                              'tabs',
+                            )
+                          : null,
+                        extra.hintText ? jsx.jsx('div', { style: FEED.hint, children: extra.hintText }, 'hint') : null,
+                        cards.length
+                          ? jsx.jsx(
+                              'div',
+                              {
+                                style: { ...FEED.grid, opacity: state?.refreshing ? 0.6 : 1 },
+                                children: cards.map((c) => jsx.jsx(FeedItemCard, { item: c.item, savedAt: c.savedAt, ...cardProps }, String(c.item.key))),
+                              },
+                              'grid',
+                            )
+                          : jsx.jsx('div', { style: FEED.hint, children: extra.emptyText ?? t('feed.empty') }, 'empty'),
+                        footer ? jsx.jsx('div', { style: FEED.hint, children: footer }, 'footer') : null,
+                      ].filter(Boolean),
+                    },
+                    'body',
+                  ),
+            ].filter(Boolean),
+          },
+          id,
+        );
+      };
+
+      return jsx.jsxs('div', {
+        style: FEED.wrap,
+        'data-feed': 'feed',
+        children: [
+          jsx.jsxs(
+            'div',
+            {
+              style: FEED.bar,
+              children: [
+                jsx.jsx('b', { children: t('feed.title') }, 'title'),
+                jsx.jsx(
+                  'span',
+                  {
+                    style: { opacity: 0.7 },
+                    children: snap?.updatedAt ? t('feed.updatedAt', { t: new Date(snap.updatedAt).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' }) }) : t('feed.never'),
+                  },
+                  'when',
+                ),
+                total ? jsx.jsx('span', { style: { opacity: 0.7 }, children: t('feed.total', { n: total }) }, 'total') : null,
+                jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+                jsx.jsx('button', { type: 'button', style: { ...FEED.btn, opacity: refreshing ? 0.6 : 1 }, disabled: refreshing, onClick: () => void refresh(), children: refreshing ? t('feed.refreshing') : t('feed.refresh') }, 'refresh'),
+              ],
+            },
+            'bar',
+          ),
+          note ? jsx.jsx('div', { style: { ...FEED.hint, padding: '4px 10px 0' }, children: note }, 'note') : null,
+          !data.loading && data.error && !snap
+            ? jsx.jsxs(
+                'div',
+                {
+                  style: { ...FEED.hint, color: 'var(--dsh-color-danger, #d35)' },
+                  children: [
+                    t('feed.loadFailed', { msg: data.error }),
+                    jsx.jsx('button', { type: 'button', style: { ...FEED.btn, marginLeft: 6 }, onClick: () => void load(), children: t('feed.retry') }, 'retry'),
+                  ],
+                },
+                'err',
+              )
+            : null,
+          showBlocks
+            ? jsx.jsxs(
+                'div',
+                {
+                  style: FEED.nav,
+                  children: [
+                    ...FEED_BLOCKS.map((b) =>
+                      jsx.jsxs(
+                        'button',
+                        {
+                          type: 'button',
+                          style: FEED.navBtn(active === b.id && !collapsed[b.id]),
+                          onClick: () => jumpTo(b.id),
+                          'aria-label': t('feed.jump', { label: b.label, n: counts[b.id] }),
+                          children: [b.short, jsx.jsx('span', { style: { opacity: 0.6, marginLeft: 4 }, children: String(counts[b.id]) }, 'n')],
+                        },
+                        b.id,
+                      ),
+                    ),
+                    jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+                    jsx.jsx(
+                      'button',
+                      {
+                        type: 'button',
+                        style: FEED.btn,
+                        title: allCollapsed ? t('feed.expandAll') : t('feed.collapseAll'),
+                        onClick: () => {
+                          const v = { github: !allCollapsed, bilibili: !allCollapsed, favorites: !allCollapsed };
+                          saveFeedCollapsed(v);
+                          setCollapsed(v);
+                        },
+                        children: allCollapsed ? t('feed.expandAll') : t('feed.collapseAll'),
+                      },
+                      'collapseAll',
+                    ),
+                  ],
+                },
+                'nav',
+              )
+            : null,
+          jsx.jsxs(
+            'div',
+            {
+              style: FEED.body,
+              ref: bodyRef,
+              children: [
+                refreshing
+                  ? jsx.jsxs(
+                      'div',
+                      {
+                        style: FEED.progress,
+                        children: [
+                          jsx.jsx('span', { children: t('feed.progress') }, 't'),
+                          jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+                          jsx.jsx('span', { style: { opacity: 0.7 }, children: t('feed.progressHint') }, 'h'),
+                        ],
+                      },
+                      'progress',
+                    )
+                  : null,
+                !enabled ? jsx.jsx('div', { style: { ...FEED.hint, padding: '8px 10px' }, children: t('feed.disabled') }, 'off') : null,
+                showBlocks
+                  ? jsx.jsxs(
+                      'div',
+                      {
+                        children: [
+                          renderBlock(
+                            'github',
+                            t('feed.block.github'),
+                            gh,
+                            [
+                              gh && gh.trendDays < 3 ? jsx.jsx('span', { style: FEED.chip('warn'), children: t('feed.trendBuilding', { n: Math.max(1, gh.trendDays || 1) }) }, 'trend') : null,
+                              gh?.hint ? jsx.jsx('span', { style: FEED.chip('warn'), children: String(gh.hint) }, 'hint') : null,
+                            ],
+                            {
+                              tabs: ghTabs,
+                              activeTab: activeTabOf(ghTabs, 'github'),
+                              onTab: (id) => setTab('github', id),
+                              hintText: ghTabs.find((x) => x.id === activeTabOf(ghTabs, 'github'))?.hint ?? '',
+                              cards: tabItems(ghTabs, 'github').map((item) => ({ item })),
+                              emptyText: t('feed.emptyGithub'),
+                            },
+                            null,
+                            () => void refresh('github'),
+                          ),
+                          renderBlock(
+                            'bilibili',
+                            t('feed.block.bilibili'),
+                            bili,
+                            [
+                              jsx.jsx('span', { style: FEED.chip(null), children: t('feed.zoneBadge', { zones: zoneNames || (pickedZones ? t('feed.zoneCount', { n: pickedZones }) : t('feed.zoneNone')), ups: upMids }) }, 'zones'),
+                              upErrors.length
+                                ? jsx.jsx('span', { style: FEED.chip('warn'), title: upErrors.map((u) => `${u.name || u.mid}：${u.error}`).join('\n'), children: t('feed.upFailed', { n: upErrors.length }) }, 'uperr')
+                                : null,
+                            ],
+                            {
+                              tabs: biliTabs,
+                              activeTab: activeTabOf(biliTabs, 'bilibili'),
+                              onTab: (id) => setTab('bilibili', id),
+                              hintText: biliTabs.find((x) => x.id === activeTabOf(biliTabs, 'bilibili'))?.hint ?? '',
+                              cards: tabItems(biliTabs, 'bilibili').map((item) => ({ item })),
+                              emptyText: t('feed.emptyBili'),
+                            },
+                            jsx.jsxs('span', { children: [bili?.error ? t('feed.lastFailed', { msg: String(bili.error) }) : null, ' ', t('feed.biliFooter')] }, 'foot'),
+                            () => void refresh('bilibili'),
+                          ),
+                          renderBlock(
+                            'favorites',
+                            t('feed.block.favorites'),
+                            null,
+                            [jsx.jsx('span', { style: FEED.chip('ok'), children: t('feed.favTotal', { n: favorites.length }) }, 'n')],
+                            {
+                              headExtra: jsx.jsx(
+                                'span',
+                                {
+                                  style: { display: 'flex', gap: 4 },
+                                  children: ['all', 'github', 'bilibili'].map((k) =>
+                                    jsx.jsx(
+                                      'button',
+                                      {
+                                        type: 'button',
+                                        style: FEED.tab(favSource === k),
+                                        onClick: () => setFavSource(k),
+                                        children: `${k === 'all' ? t('feed.favAll') : k === 'github' ? 'GitHub' : 'B站'} ${String(k === 'all' ? favorites.length : favorites.filter((f) => f.item?.source === k).length)}`,
+                                      },
+                                      k,
+                                    ),
+                                  ),
+                                },
+                                'favFilters',
+                              ),
+                              cards: favCards,
+                              hintText: t('feed.favHint', { hidden: (snap?.hidden ?? []).length }),
+                              emptyText: favorites.length ? t('feed.favEmptySource') : t('feed.favEmpty'),
+                            },
+                            null,
+                            null,
+                          ),
+                        ],
+                      },
+                      'blocks',
+                    )
+                  : null,
+              ],
+            },
+            'body',
+          ),
+          pendingHide
+            ? jsx.jsx(
+                'div',
+                {
+                  style: FEED.overlay,
+                  children: jsx.jsxs(
+                    'div',
+                    {
+                      style: FEED.dialog,
+                      children: [
+                        jsx.jsx('b', { children: t('feed.hideTitle') }, 'title'),
+                        jsx.jsx('div', { style: { marginTop: 4, opacity: 0.85, lineHeight: 1.5, wordBreak: 'break-word' }, children: `${pendingHide.source === 'github' ? 'GitHub' : 'B站'} · ${String(pendingHide.title ?? '')}` }, 'target'),
+                        jsx.jsx('div', { style: { marginTop: 6, opacity: 0.75, lineHeight: 1.5 }, children: t('feed.hideBody') }, 'body'),
+                        jsx.jsxs(
+                          'div',
+                          {
+                            style: { display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 8 },
+                            children: [
+                              jsx.jsx('button', { type: 'button', style: FEED.btn, onClick: () => setPendingHide(null), children: t('feed.cancel') }, 'cancel'),
+                              jsx.jsx(
+                                'button',
+                                {
+                                  type: 'button',
+                                  style: { ...FEED.btn, borderColor: 'var(--dsh-color-danger, #d35)', color: 'var(--dsh-color-danger, #d35)' },
+                                  onClick: () => {
+                                    const item = pendingHide;
+                                    setPendingHide(null);
+                                    void hide(item.key);
+                                  },
+                                  children: t('feed.hideConfirm'),
+                                },
+                                'ok',
+                              ),
+                            ],
+                          },
+                          'actions',
+                        ),
+                      ],
+                    },
+                    'box',
+                  ),
+                },
+                'hide',
+              )
+            : null,
+          draft
+            ? jsx.jsx(
+                'div',
+                {
+                  style: FEED.overlay,
+                  children: jsx.jsxs(
+                    'div',
+                    {
+                      style: FEED.dialog,
+                      children: [
+                        jsx.jsx('b', { children: t('feed.prefillTitle') }, 'title'),
+                        jsx.jsx('input', { style: FEED.input, value: draft.title, onChange: (e) => setDraft({ ...draft, title: e.target.value }) }, 'title'),
+                        jsx.jsx('textarea', { style: { ...FEED.input, minHeight: 90, resize: 'vertical' }, value: draft.description, onChange: (e) => setDraft({ ...draft, description: e.target.value }) }, 'desc'),
+                        jsx.jsx(
+                          'input',
+                          {
+                            style: FEED.input,
+                            value: (draft.tags ?? []).join(' '),
+                            placeholder: t('feed.prefillTags'),
+                            onChange: (e) => setDraft({ ...draft, tags: e.target.value.split(/[\s,，]+/).filter(Boolean) }),
+                          },
+                          'tags',
+                        ),
+                        jsx.jsxs(
+                          'div',
+                          {
+                            style: { display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 8 },
+                            children: [
+                              jsx.jsx('button', { type: 'button', style: FEED.btn, onClick: () => setDraft(null), children: t('feed.cancel') }, 'cancel'),
+                              jsx.jsx(
+                                'button',
+                                {
+                                  type: 'button',
+                                  style: { ...FEED.btn, borderColor: 'var(--dsh-color-accent, #4a8cff)', color: 'var(--dsh-color-accent, #4a8cff)' },
+                                  onClick: () => void createIdea(),
+                                  children: t('feed.prefillSave'),
+                                },
+                                'save',
+                              ),
+                            ],
+                          },
+                          'actions',
+                        ),
+                      ],
+                    },
+                    'box2',
+                  ),
+                },
+                'draft',
+              )
+            : null,
+        ].filter(Boolean),
+      });
     }
 
     /** 页签头（右侧栏那一小条） */
@@ -1625,7 +2650,9 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard };
+    exports.__components = { AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard };
+    /** 合集的口径副本（纯函数；verify-dsh 拿内核 src/shared/feed-format.ts 逐字比） */
+    exports.__feedHelpers = { FEED_KIND_LABEL, FEED_BLOCKS, compactNumber, metricText, trendText, feedPrefill, markFeedRecorded };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
     exports.__calendarHelpers = { monthGridDays, shiftMonth, dayKeyLocal, groupByDayLocal, monthLabel, dayLabel, postAction };
     /** 给 verify 用：看板的列序 / 分桶 / 相对时间（纯计算，不依赖 React） */

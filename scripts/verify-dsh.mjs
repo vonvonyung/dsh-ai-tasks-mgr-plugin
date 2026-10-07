@@ -455,6 +455,136 @@ async function checkRender() {
     `${calGridHtml.length} 字节`,
   );
 
+  /* ---- 原生合集（M3 逐页搬家第三页；此前一直是 iframe）---- */
+  const F = loaded.exports.__feedHelpers;
+  const clientSrc = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+  check(
+    '面板里「合集」走原生（不再套 iframe，只有「在完整面板里打开」才用）',
+    /view === 'feed' && !embedIdea[\s\S]{0,400}?jsx\.jsx\(AitmFeed/.test(clientSrc) && Boolean(loaded.exports.__components.AitmFeed),
+  );
+  check(
+    '合集三块顺序＝桌面 FeedView 的 BLOCKS（GitHub / B站 / 收藏）',
+    JSON.stringify(F.FEED_BLOCKS.map((b) => b.id)) === JSON.stringify(['github', 'bilibili', 'favorites']),
+    F.FEED_BLOCKS.map((b) => `${b.short}=${b.label}`).join(' / '),
+  );
+
+  /* ---- 合集的口径钉在内核：插件不能 import 仓库源码，副本必须与内核**逐字**一致 ---- */
+  const feedFmtSrc = fs.readFileSync(path.join(REPO, 'src', 'shared', 'feed-format.ts'), 'utf8');
+  const feedViewSrc = fs.readFileSync(path.join(REPO, 'src', 'renderer', 'src', 'components', 'FeedView.tsx'), 'utf8');
+  const kernelKindBlock = feedFmtSrc.match(/FEED_KIND_LABEL[^=]*=\s*\{([^}]*)\}/)?.[1] ?? '';
+  const kernelKind = Object.fromEntries([...kernelKindBlock.matchAll(/(\w+)\s*:\s*'([^']+)'/g)].map((m) => [m[1], m[2]]));
+  check(
+    '合集的「类别」名＝内核 FEED_KIND_LABEL（逐字，5 类）',
+    Object.keys(kernelKind).length === 5 && JSON.stringify(F.FEED_KIND_LABEL) === JSON.stringify(kernelKind),
+    Object.entries(kernelKind).map(([k, v]) => `${k}=${v}`).join(' '),
+  );
+  const kernelBlocksArr = feedViewSrc.match(/const BLOCKS[^=]*=\s*\[([\s\S]*?)\];/)?.[1] ?? '';
+  const kernelBlocks = [...kernelBlocksArr.matchAll(/id:\s*'(\w+)',\s*label:\s*'([^']+)',\s*short:\s*'([^']+)'/g)].map((m) => ({ id: m[1], label: m[2], short: m[3] }));
+  check(
+    '合集三块的 id/名字＝桌面 FeedView 的 BLOCKS（逐字）',
+    kernelBlocks.length === 3 && JSON.stringify(kernelBlocks) === JSON.stringify(F.FEED_BLOCKS),
+    kernelBlocks.map((b) => b.short).join(' / '),
+  );
+  check(
+    '指标/趋势口径与内核同源（万·亿阈值 + ★/⑂/播放/赞/弹幕/上榜 都在内核那份里）',
+    /100_000_000/.test(feedFmtSrc) &&
+      /10_000/.test(feedFmtSrc) &&
+      ['★ ', '⑂ ', '播放 ', '赞 ', '弹幕 ', '上榜 ', '均名 #'].every((marker) => feedFmtSrc.includes(marker)),
+  );
+  check(
+    '数字缩写：默认千分位、中文侧 1.2 万 / 1.2 亿',
+    F.compactNumber(12345) === '12,345' && F.compactNumber(12345, { wan: true }) === '1.2 万' && F.compactNumber(123456789, { wan: true }) === '1.2 亿' && F.compactNumber(NaN) === '—',
+    `${F.compactNumber(12345)} / ${F.compactNumber(12345, { wan: true })} / ${F.compactNumber(123456789, { wan: true })}`,
+  );
+
+  const ghItem = {
+    key: 'gh:o/r',
+    source: 'github',
+    kind: 'repo',
+    title: 'OpenCardboard',
+    subtitle: 'TypeScript',
+    url: 'https://github.com/Sahiii-i/OpenCardboard',
+    rank: 3,
+    metrics: { stars: 12345, starsToday: 234 },
+    summary: '本地优先的 chat-to-edit 视频编辑器',
+    tags: ['视频'],
+    fetchedAt: Date.now(),
+  };
+  check('指标行：有就显示、缺就不写 0', F.metricText(ghItem) === '★ 12,345 · +234/日', F.metricText(ghItem));
+  const biliItem = { ...ghItem, source: 'bilibili', kind: 'video', metrics: { views: 123456, likes: 12000 } };
+  check('指标行：B站侧用「万」', F.metricText(biliItem) === '播放 12.3 万 · 赞 1.2 万', F.metricText(biliItem));
+  const trendItem = { ...ghItem, trend: { ready: true, appearRatio: 0.83, avgRank: 4, starVelocity: 120.4 } };
+  check(
+    '趋势行：没 ready 就不显示；ready 时给「上榜 % · 均名 · 增速」',
+    F.trendText(ghItem) === null && F.trendText(trendItem) === '上榜 83% · 均名 #4 · +120/日',
+    String(F.trendText(trendItem)),
+  );
+  const draft0 = F.feedPrefill(ghItem);
+  check(
+    '「改一改再记」的预填：标题 + 来源行 + 数据 + 简介 + 资讯标签',
+    draft0.title === 'OpenCardboard' &&
+      draft0.description.includes('来源：[OpenCardboard](https://github.com/Sahiii-i/OpenCardboard)') &&
+      draft0.description.includes('数据：★ 12,345 · +234/日') &&
+      draft0.description.includes('本地优先') &&
+      JSON.stringify(draft0.tags) === JSON.stringify(['资讯', 'GitHub']),
+    draft0.description.split('\n')[0],
+  );
+  const miniSnap = { github: { today: [{ key: 'gh:o/r' }, { key: 'gh:x/y' }], week: [], month: [], newRepos: [] }, bilibili: { hot: [{ key: 'bl:a' }], ai: [], zones: [{ tid: 1, items: [{ key: 'gh:o/r' }] }], ups: [] } };
+  const marked = F.markFeedRecorded(miniSnap, 'gh:o/r', 'idea-9');
+  check(
+    '记录成功后就地标记：命中条目带上 ideaId，其它不动（与桌面 store 同一做法）',
+    marked.github.today[0].ideaId === 'idea-9' &&
+      marked.github.today[1].ideaId === undefined &&
+      marked.bilibili.hot[0].ideaId === undefined &&
+      marked.bilibili.zones[0].items[0].ideaId === 'idea-9' &&
+      miniSnap.github.today[0].ideaId === undefined,
+    `today[0]=${String(marked.github.today[0].ideaId)} hot[0]=${String(marked.bilibili.hot[0].ideaId)}`,
+  );
+
+  const FeedCardC = loaded.exports.__components.FeedItemCard;
+  const cardHtml = renderToStaticMarkup(
+    React.createElement(FeedCardC, { item: ghItem, onRecord: () => {}, onStar: () => {}, onHide: () => {}, onPrefill: () => {}, onOpenIdea: () => {}, t: fakeT }),
+  );
+  check(
+    '合集卡片：名次 + 标题外链 + 类别 + 来源 + 副标题 + 指标 + 简介 + 图标动作（★/⊘/✎/✨）',
+    cardHtml.includes('data-feed-card="gh:o/r"') &&
+      cardHtml.includes('#3') &&
+      cardHtml.includes('OpenCardboard') &&
+      cardHtml.includes('github.com/Sahiii-i/OpenCardboard') &&
+      cardHtml.includes('项目') &&
+      cardHtml.includes('TypeScript') &&
+      cardHtml.includes('★ 12,345') &&
+      cardHtml.includes('本地优先') &&
+      ['☆', '⊘', '✎', '✨'].every((g) => cardHtml.includes(g)),
+    `${cardHtml.length} 字节`,
+  );
+  const cardDoneHtml = renderToStaticMarkup(
+    React.createElement(FeedCardC, { item: { ...ghItem, starred: true, ideaId: 'idea-9' }, onRecord: () => {}, onStar: () => {}, onHide: () => {}, onPrefill: () => {}, onOpenIdea: () => {}, t: fakeT }),
+  );
+  check('合集卡片：收藏过是实心 ★；已记录只留「✓ 打开想法」（不再重复给记录按钮）', cardDoneHtml.includes('★') && cardDoneHtml.includes('✓') && !cardDoneHtml.includes('✨') && !cardDoneHtml.includes('✎'));
+  const favCardHtml = renderToStaticMarkup(
+    React.createElement(FeedCardC, { item: ghItem, savedAt: Date.now() - 3600_000, onRecord: () => {}, onStar: () => {}, onHide: () => {}, onPrefill: () => {}, onOpenIdea: () => {}, t: fakeT }),
+  );
+  const B2 = loaded.exports.__boardHelpers;
+  check('收藏视图显示「收藏于 X」（与桌面同一条相对时间口径）', favCardHtml.includes(`收藏于 ${B2.relTime(Date.now() - 3600_000)}`), `收藏于 ${B2.relTime(Date.now() - 3600_000)}`);
+
+  const FeedPanel = loaded.exports.__components.AitmFeed;
+  const feedPanelHtml = renderToStaticMarkup(React.createElement(FeedPanel, { base: null, onOpenIdea: () => {} }));
+  check(
+    '合集离线渲染：目录条三块 + 三个块骨架都在（服务端渲染不跑 effect，但结构要在）',
+    feedPanelHtml.includes('data-feed="feed"') &&
+      (feedPanelHtml.match(/data-feed-block=/g) ?? []).length === 3 &&
+      feedPanelHtml.includes('data-feed-block="favorites"') &&
+      feedPanelHtml.includes('全部收起'),
+    `${feedPanelHtml.length} 字节`,
+  );
+  check(
+    '合集词典：三块标题 + 收起/刷新/记想法这些文案都在（中英键一一对应，上面已整体比过）',
+    ['feed.block.github', 'feed.block.bilibili', 'feed.block.favorites', 'feed.collapseAll', 'feed.refresh', 'feed.record', 'feed.hideTitle'].every((k) => typeof dict.zh?.[k] === 'string' && typeof dict.en?.[k] === 'string') &&
+      Object.keys(dict.zh ?? {}).filter((k) => k.startsWith('feed.')).length >= 60,
+    `feed.* 键 ${String(Object.keys(dict.zh ?? {}).filter((k) => k.startsWith('feed.')).length)} 个`,
+  );
+
   const brokenHtml = render({ phase: 'result', block: { kind: 'tool-result', callId: 'c1', call: null, content: [], isError: true, error: { name: 'RemoteError', code: 'E_BOOM' } } });
   check('异常块：不炸（渲染成失败卡）', /E_BOOM|失败|没写成/.test(brokenHtml), brokenHtml.slice(0, 80));
   globalThis.fetch = realFetch;
@@ -797,6 +927,55 @@ async function checkTools() {
       illegal = String(err?.message ?? err);
     }
     check('看板拖拽：非法流转被内核拒绝并给出原因', Boolean(illegal) && /流转|状态/.test(illegal), String(illegal).slice(0, 80));
+
+    /* ---- 合集的数据面：同样走面板同款通道（feed.* / settings.get / idea.create）----
+       合集页在浏览器里直接打 `/api/<action>`，所以这里也照那条路验一遍：
+       既证明这些 action 在插件自己的端口上都存在（旧后端会 404「未知接口」），
+       也证明负例（收藏/隐藏一个不在榜上的条目）给的是人话而不是 500。 */
+    const feedCalls = ['feed.get', 'settings.get'];
+    let feedMissing = null;
+    for (const action of feedCalls) {
+      try {
+        await post(boardBase, action, {});
+      } catch (err) {
+        feedMissing = `${action}: ${String(err?.message ?? err)}`;
+        break;
+      }
+    }
+    check('合集的取数通道都在（feed.get / settings.get）', !feedMissing, feedMissing ?? '');
+    const snap0 = await post(boardBase, 'feed.get', { refresh: false });
+    check(
+      '合集快照形状：两源 + 收藏 + 已隐藏 + sources 状态 + updatedAt',
+      Boolean(snap0 && snap0.github && snap0.bilibili && Array.isArray(snap0.favorites) && Array.isArray(snap0.hidden) && snap0.sources && typeof snap0.updatedAt === 'number'),
+      `updatedAt=${String(snap0?.updatedAt)} favorites=${String(snap0?.favorites?.length)}`,
+    );
+    const st0 = await post(boardBase, 'settings.get', {});
+    check(
+      '合集徽标读的设置项都在（feed.enabled / biliZones / upMids）',
+      Boolean(st0?.feed) && typeof st0.feed.enabled === 'boolean' && Array.isArray(st0.feed.biliZones) && Array.isArray(st0.feed.upMids),
+      `enabled=${String(st0?.feed?.enabled)} zones=${String(st0?.feed?.biliZones?.length)} ups=${String(st0?.feed?.upMids?.length)}`,
+    );
+    let starErr = null;
+    try {
+      await post(boardBase, 'feed.star', { key: 'not-a-real-key' });
+    } catch (err) {
+      starErr = String(err?.message ?? err);
+    }
+    check('合集收藏：不在榜上的条目给的是人话（不是 HTTP 500）', Boolean(starErr) && !/HTTP 500/.test(starErr) && /热榜/.test(starErr), String(starErr).slice(0, 60));
+    let hideErr = null;
+    try {
+      await post(boardBase, 'feed.hide', { key: 'not-a-real-key' });
+    } catch (err) {
+      hideErr = String(err?.message ?? err);
+    }
+    check('合集隐藏：同上（隐藏前界面还要弹一次确认）', Boolean(hideErr) && !/HTTP 500/.test(hideErr), String(hideErr).slice(0, 60));
+    // 「改一改再记」走的是 idea.create —— 面板那颗铅笔按钮的通道
+    const draftIdea = await post(boardBase, 'idea.create', { title: '合集预填验收：改一改再记', tags: ['资讯', 'GitHub'] });
+    check(
+      '合集预填：idea.create 走得通（标题 + 标签都落库）',
+      Boolean(draftIdea?.id) && draftIdea.title === '合集预填验收：改一改再记' && JSON.stringify(draftIdea.tags) === JSON.stringify(['资讯', 'GitHub']),
+      String(draftIdea?.id),
+    );
 
   } finally {
     await host?.stop?.().catch?.(() => undefined);
