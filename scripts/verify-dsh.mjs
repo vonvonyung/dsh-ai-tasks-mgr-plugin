@@ -300,6 +300,43 @@ async function checkRender() {
   const detailHtml = render({ toolName: 'aitm_idea_get', phase: 'result', block: resultBlock({ kind: 'idea-detail', id: 'idea-9', title: '给日历加导出', status: 'ready', tags: ['日历'], priority: 'p1', description: '导出成 .ics', tasks: [{ id: 't_1', status: 'succeeded', turns: 2 }] }) });
   check('详情卡：标题 + 状态 + 标签 + 正文 + 任务', detailHtml.includes('给日历加导出') && detailHtml.includes('日历') && detailHtml.includes('导出成 .ics') && detailHtml.includes('t_1'));
 
+  {
+    /* 可读性守门（2026-10-07 用户截图「深色主题下白底白字」之后加的）：
+       把面板的**关键配色**按 WCAG 算一遍对比度 —— 两套主题都要 ≥4.5:1（小字 AA）。
+       卡片底 = DSH 的 `--dsw-alias-bg-layer-2`（浅 #ffffff / 深 #2c2c2e），徽章底 = 桌面 `.pill.*` 的叠色。 */
+    const csrc4 = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+    const grab = (re, src = csrc4) => re.exec(src)?.[1] ?? null;
+    const lightPart = csrc4.slice(csrc4.indexOf("'body{--aitm-fg-ok"), csrc4.indexOf("'body[data-ds-dark-theme]"));
+    const darkPart = csrc4.slice(csrc4.indexOf("'body[data-ds-dark-theme]"));
+    // [tone 表里的键, --aitm-fg-* 变量后缀] —— 全 8 档都查
+    const tones = [
+      ['ok', 'ok'], ['err', 'err'], ['warn', 'warn'], ['info', 'info'],
+      ['grey', 'dim'], ['muted', 'muted'], ['accent', 'purple'], ['cyan', 'cyan'],
+    ];
+    const bgOf = (name) => {
+      const m = new RegExp(`${name}: \\['rgba\\((\\d+),\\s*(\\d+),\\s*(\\d+),\\s*([\\d.]+)\\)`).exec(csrc4);
+      return m ? [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])] : null;
+    };
+    const cards = { light: [255, 255, 255], dark: [44, 44, 46] }; // DSH layer-2 两套实测值
+    const lum = (c) => { const f = c.map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2]; };
+    const ratio = (a, b) => { const [l1, l2] = [lum(a), lum(b)].sort((x, y) => y - x); return (l1 + 0.05) / (l2 + 0.05); };
+    const hexOf = (h) => [0, 2, 4].map((i) => parseInt(h.slice(i + 1, i + 3), 16));
+    const over = (fg, a, bg) => fg.map((c, i) => c * a + bg[i] * (1 - a));
+    const worst = [];
+    for (const [name, card, part] of [['浅色', cards.light, lightPart], ['深色', cards.dark, darkPart]]) {
+      for (const [tone2, varName] of tones) {
+        const fg = grab(new RegExp(`--aitm-fg-${varName}:(#[0-9a-f]{6})`), part);
+        const bg = bgOf(tone2);
+        if (!fg || !bg) { worst.push(`${name}·${tone2}(取值失败)`); continue; }
+        // 次要档（已取消/已归档）刻意弱化：按 4.0 兜底，其余按小字 AA 4.5
+        const limit = tone2 === 'muted' ? 4.0 : 4.5;
+        const r = ratio(hexOf(fg), over(bg.slice(0, 3), bg[3], card));
+        if (r < limit) worst.push(`${name}·${tone2}=${r.toFixed(2)}(<${limit})`);
+      }
+    }
+    check('徽章文字在两套主题下都够读（WCAG，次要档 4.0 / 其余 4.5）', worst.length === 0, worst.join('；') || '全部达标');
+  }
+
   const taskHtml = render({ toolName: 'aitm_task_status', phase: 'result', block: resultBlock({ kind: 'task', task: { id: 't_9', title: '加 --json 输出', status: 'running', turns: 3, adapterId: 'cli' } }) });
   check('任务卡：标题 + 状态 + 轮次', taskHtml.includes('加 --json 输出') && taskHtml.includes('running') && taskHtml.includes('3'));
   {
@@ -325,16 +362,77 @@ async function checkRender() {
     const queued = chipCss('queued');
     check(
       '任务状态有语义色：成功=绿、失败=红、跑=蓝、排队=灰（以前全是同一坨灰）',
-      ok.includes('success') && bad.includes('error') && run.includes('business') && queued.includes('label-tertiary'),
+      ok.includes('--aitm-fg-ok') && bad.includes('--aitm-fg-err') && run.includes('--aitm-fg-info') && queued.includes('--aitm-fg-dim'),
       `succeeded=${ok} / failed=${bad}`,
     );
     check('配色把任务状态和已取消分开（succeeded ≠ cancelled 的样式）', ok !== chipCss('cancelled') && ok !== bad);
-    check(
-      '前景色优先取宿主的真令牌 --dsw-alias-state-*（旧代码写的 --dsh-color-* 宿主根本没有）',
-      // 只断言「状态徽章」这条路径用的是宿主真令牌；全库其它 `--dsh-color-*`（宿主没定义、一直走我们的兜底色）
-      // 属历史遗留，记在 HANDOVER 的待清理项里，不在这一批动（动它等于改全站配色，得能在真机看）
-      ok.includes('--dsw-alias-state-success-primary') && bad.includes('--dsw-alias-state-error-primary'),
-    );
+    {
+      /* 徽章文字色必须是**两套**（浅色主题深、深色主题亮）——宿主的 state-*-primary 在两个主题里
+         是同一个亮色，当小字用浅色主题下只有 2.1:1（AA 要 4.5:1）。这两套值**逐字抄桌面端**。 */
+      const csrc3 = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+      const varsBlock = /const THEME_VARS_ID[\s\S]*?document\n?/;
+      const lightM = /'body\{--aitm-fg-ok:(#[0-9a-f]{6});/.exec(csrc3);
+      const darkM = /'body\[data-ds-dark-theme\]\{--aitm-fg-ok:(#[0-9a-f]{6});/.exec(csrc3);
+      check(
+        '语义文字色有**两套**（浅色主题一套 + body[data-ds-dark-theme] 深色主题一套）',
+        Boolean(lightM && darkM) && lightM[1] !== darkM[1],
+        `浅=${lightM?.[1]} 深=${darkM?.[1]}`,
+      );
+      check('两套色在 apply() 里装上（浏览器侧注入，离线渲染不受影响）', /ensureThemeVars\(\);/.test(csrc3));
+      /* 与桌面端逐字一致（分发场景没有主仓源码 ⇒ 缺文件就跳过） */
+      const cssPath = path.join(ROOT, '..', 'src', 'renderer', 'src', 'styles.css');
+      if (fs.existsSync(cssPath)) {
+        const css = fs.readFileSync(cssPath, 'utf8');
+        const table = { ok: '--tint-ok', err: '--tint-err', warn: '--tint-warn', info: '--tint-blue', dim: '--tint-gray', muted: '--tint-gray-dim', cyan: '--tint-cyan', purple: '--tint-purple' };
+        const lightIdx = css.indexOf(":root[data-theme='light']");
+        const pick = (v, light) => {
+          const re = new RegExp('\\' + v + ':\\s*(#[0-9a-f]{6})', 'g');
+          let m, out = [];
+          while ((m = re.exec(css))) out.push({ pos: m.index, v: m[1] });
+          const f = out.filter((x) => (x.pos > lightIdx) === light);
+          return (f[0] ?? out[0])?.v ?? null;
+        };
+        const mismatch = Object.entries(table).filter(([k, v]) => {
+          const l = new RegExp(`--aitm-fg-${k}:(#[0-9a-f]{6})`).exec(lightM ? csrc3.slice(csrc3.indexOf("'body{--aitm-fg-ok"), csrc3.indexOf("'body[data-ds-dark-theme]")) : '')?.[1];
+          const d = new RegExp(`--aitm-fg-${k}:(#[0-9a-f]{6})`).exec(csrc3.slice(csrc3.indexOf("'body[data-ds-dark-theme]")))?.[1];
+          return l !== pick(v, true) || d !== pick(v, false);
+        });
+        check(
+          '两套语义文字色与桌面端 styles.css 的 --tint-* **逐字一致**（面板颜色＝桌面颜色）',
+          mismatch.length === 0,
+          mismatch.map(([k]) => k).join('/'),
+        );
+      }
+    }
+    {
+      /* 守门：面板配色必须挂在**宿主真令牌**上。
+         2026-10-07 用户截图：深色主题下想法卡片是**白底白字** —— 根因是底色写 `--dsh-color-bg-elevated`
+         （宿主没有这个前缀）⇒ 永远吃兜底 `#fff`，而文字色是从宿主继承的浅色。 */
+      const csrc2 = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+      check(
+        '面板不再引用宿主没有的 --dsh-color-*（写它＝永远吃兜底、不跟深浅主题）',
+        !/var\(--dsh-color-/.test(csrc2),
+        (csrc2.match(/var\(--dsh-color-[a-z-]*/g) ?? []).slice(0, 3).join(' / '),
+      );
+      check(
+        '卡片/弹窗底色用宿主层级令牌（深浅主题各一套）',
+        /var\(--dsw-alias-bg-layer-[123],/.test(csrc2) && /--dsw-alias-bg-layer-2/.test(csrc2),
+      );
+      check(
+        '描边用 --dsw-alias-border-l*（三档都在用）',
+        ['l1', 'l2', 'l3'].every((k) => csrc2.includes(`var(--dsw-alias-border-${k},`)),
+      );
+      /* 离线渲染出的样式里，**不许出现任何写死的浅色底**（#fff / #ffffff / white）：
+         深色主题下那会变成一块白板。兜底值必须也是"能跟主题走"的表达。 */
+      const lightOnly = ['#fff;', '#ffffff;', '#fff)', '#ffffff)', ':white', ': #fff', 'rgba(255,255,255', 'rgba(255, 255, 255'];
+      const html = render({
+        toolName: 'aitm_task_status',
+        phase: 'result',
+        block: resultBlock({ kind: 'task', task: { id: 't_1', title: 'x', status: 'succeeded', turns: 1 } }),
+      });
+      const hit = lightOnly.filter((v) => new RegExp(v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(html));
+      check('渲染结果里没有写死的浅色底（深色主题下会变白板）', hit.length === 0, hit.join(' / '));
+    }
     {
       /* 守门：加新状态时忘了补配色 ⇒ 静默落灰（2026-10-07 那条 bug 的根因正是这个）。
          直接从源码抠两张配色表的键，跟内核的状态清单对表。 */
@@ -377,7 +475,7 @@ async function checkRender() {
     const styleOf = (st) => new RegExp(`style="([^"]*)"[^>]*data-task-status="${st}"`).exec(taskListHtml)?.[1] ?? '';
     check(
       '任务列表卡：同屏里成功=绿、失败=红（不再是同一坨灰）',
-      styleOf('succeeded').includes('success') && styleOf('failed').includes('error'),
+      styleOf('succeeded').includes('--aitm-fg-ok') && styleOf('failed').includes('--aitm-fg-err'),
       `succeeded=${styleOf('succeeded').slice(0, 40)}…`,
     );
   }

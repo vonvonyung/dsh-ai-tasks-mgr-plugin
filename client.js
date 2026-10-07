@@ -482,22 +482,58 @@ window.__ModuleLoader__.load({
     };
 
     /**
-     * 语义色（状态徽章用）：**先取 DSH 宿主的设计令牌**，取不到才退回我们自己的色板。
+     * 面板的「语义文字色」——**两套值，随 DSH 主题自动切**。
      *
-     * ⚠️ 2026-10-07 修：这里以前写的是 `--dsh-color-*` —— 那个前缀**宿主根本没有**（DSH 0.2.0-rc.2 用的是
-     * `--dsw-*`，见 `dsh-client-ui-theme`），所以一直是「取不到 → 退回硬编码色」。用户看到「succeeded 是灰的」
-     * 一半是因为这个；另一半见下面 `TASK_STATUS_COLOR`（任务状态压根没进配色表）。
-     * 背景优先用宿主的 `…-tertiary` 淡底令牌（深浅主题各一套）；宿主没有 tertiary 的（error）才用
-     * `color-mix(...)` 现兑（宿主自己也这么干，如 `--dsw-alias-label-shimmer`）。
+     * 为什么不用宿主的 `--dsw-alias-state-*-primary`：那是**图标/填充**档，在两个主题里是同一个亮绿/亮红；
+     * 当**小字**颜色用，浅色主题下会糊（实测对比度只有 2.1:1，AA 要 4.5）。
+     * 桌面端早就把这件事做对了 —— `styles.css` 的 `--tint-*` 是**两套**（深色主题亮、浅色主题深），
+     * 这里的值就是**逐字抄它**，保证「面板上的颜色＝桌面上的颜色」。
+     *
+     * 注入一小段 CSS 而不是在 JS 里判断主题：主题切换时浏览器自己重算级联（不用重渲染组件），
+     * 也顺手让离线渲染（无 document）保持纯字符串输出。
+     */
+    const THEME_VARS_ID = 'aitm-theme-vars';
+    const ensureThemeVars = () => {
+      try {
+        if (typeof document === 'undefined' || document.getElementById(THEME_VARS_ID)) return;
+        const el = document.createElement('style');
+        el.id = THEME_VARS_ID;
+        el.textContent = [
+          /* 浅色主题（DSH 默认；值 = 桌面 styles.css 的 light 块） */
+          'body{--aitm-fg-ok:#116b4a;--aitm-fg-err:#a8323f;--aitm-fg-warn:#8a5a08;--aitm-fg-info:#2f5fb8;--aitm-fg-dim:#46536d;--aitm-fg-muted:#5c6b88;--aitm-fg-cyan:#0f7d94;--aitm-fg-purple:#5b3aa8}',
+          /* 深色主题（值 = 桌面 styles.css 的 :root 默认块） */
+          'body[data-ds-dark-theme]{--aitm-fg-ok:#85e8bd;--aitm-fg-err:#ff9ba6;--aitm-fg-warn:#ffce7a;--aitm-fg-info:#a9c4ff;--aitm-fg-dim:#b3c0d8;--aitm-fg-muted:#8a9ab5;--aitm-fg-cyan:#8fe6f5;--aitm-fg-purple:#c9b0ff}',
+        ].join('\n');
+        document.head.appendChild(el);
+      } catch {
+        /* 没有 document（离线渲染 / 宿主自检）就跳过：样式里的兜底值顶上 */
+      }
+    };
+
+    /**
+     * 面板配色总则（2026-10-07 两轮修完，血泪）：
+     *
+     * 1. **宿主的设计令牌是 `--dsw-*`**（定义在 `@deepseek-ai/dsh-client-ui-theme`，`body{…}` 浅色、
+     *    `body[data-ds-dark-theme]{…}` 深色两套）。面板从前写的是 `--dsh-color-*` —— 那个前缀宿主**根本没有**，
+     *    等于每处颜色都在吃我们自己的兜底写死值 ⇒ **深浅主题不跟、深色主题下白卡片配白字**（2026-10-07 用户截图）。
+     * 2. 语义色用 `--dsw-alias-state-{success,error,warn,business}-*`；底色/描边用
+     *    `--dsw-alias-bg-layer-{1,2,3}` / `--dsw-alias-border-l{1,2,3}`；文字层次用 `--dsw-alias-label-{primary,secondary,tertiary}`。
+     * 3. 宿主**没有**翻译成令牌的色（青/紫、以及各种"淡填充"）用两条腿走路：
+     *    固定色值 + `color-mix(…, var(--dsw-alias-label-primary, currentColor))` —— 前景色往当前主题的文字色方向靠，
+     *    浅色主题变深、深色主题变亮，两个主题下都可读。
+     * 4. 每处都保留 `var(令牌, 兜底值)` 形式：宿主换版/换主题时最差也只是退回兜底，不会变透明或消失。
      */
     const tone = (name) => {
       const table = {
-        ok: ['var(--dsw-alias-state-success-tertiary, rgba(46,160,67,0.15))', 'var(--dsw-alias-state-success-primary, #1a7f37)'],
-        warn: ['var(--dsw-alias-state-warn-tertiary, rgba(219,171,10,0.18))', 'var(--dsw-alias-state-warn-label, #bb8009)'],
-        err: ['color-mix(in srgb, var(--dsw-alias-state-error-primary, #d1242f) 16%, transparent)', 'var(--dsw-alias-state-error-primary, #d1242f)'],
-        info: ['var(--dsw-alias-state-business-tertiary, rgba(56,139,253,0.15))', 'var(--dsw-alias-state-business-primary, #388bfd)'],
-        accent: ['rgba(163,113,247,0.18)', '#8957e5'],
-        grey: ['var(--dsw-alias-bg-layer-3, rgba(127,127,127,0.18))', 'var(--dsw-alias-label-tertiary, #6e7781)'],
+        /* 背景：与桌面 `styles.css` 的 `.pill.*` 逐字一致（同一套叠色配方，两主题下都成立） */
+        ok: ['rgba(70,211,154,0.15)', 'var(--aitm-fg-ok, #85e8bd)'],
+        warn: ['rgba(242,176,61,0.15)', 'var(--aitm-fg-warn, #ffce7a)'],
+        err: ['rgba(255,107,122,0.15)', 'var(--aitm-fg-err, #ff9ba6)'],
+        info: ['rgba(109,157,255,0.17)', 'var(--aitm-fg-info, #a9c4ff)'],
+        accent: ['rgba(178,140,255,0.15)', 'var(--aitm-fg-purple, #c9b0ff)'],
+        cyan: ['rgba(79,212,232,0.10)', 'var(--aitm-fg-cyan, #8fe6f5)'],
+        grey: ['rgba(142,157,187,0.14)', 'var(--aitm-fg-dim, #b3c0d8)'],
+        muted: ['rgba(99,114,143,0.16)', 'var(--aitm-fg-muted, #8a9ab5)'],
       };
       return table[name] ?? table.grey;
     };
@@ -510,12 +546,12 @@ window.__ModuleLoader__.load({
     const STATUS_COLOR = {
       inbox: tone('grey'),
       scoping: tone('accent'),
-      ready: ['rgba(34,184,207,0.16)', '#22b8cf'],
+      ready: tone('cyan'),
       developing: tone('info'),
       review: tone('warn'),
       blocked: tone('err'),
       done: tone('ok'),
-      archived: tone('grey'),
+      archived: tone('muted'),
     };
 
     /**
@@ -530,19 +566,33 @@ window.__ModuleLoader__.load({
       waiting_input: tone('warn'),
       succeeded: tone('ok'),
       failed: tone('err'),
-      cancelled: tone('grey'),
+      cancelled: tone('muted'),
     };
     const T = {
       card: {
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.28))',
+        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28))',
         borderRadius: 10,
         padding: '10px 12px',
         marginTop: 6,
-        background: 'color-mix(in srgb, var(--dsh-color-bg-elevated, #ffffff) 92%, transparent)',
+        background: 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.10))',
       },
       head: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
       title: { fontWeight: 600, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       sub: { fontSize: 11.5, opacity: 0.7, marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+      /**
+       * 「正文段」（想法描述之类）：**显式**用宿主的次级文字色，不靠 `opacity` 遮罩 ——
+       * opacity 是「相对当前底色」的遮罩，底色一错（深色主题下的白卡片）就整段看不见；
+       * 显式色则由宿主保证「在这套主题里可读」。
+       */
+      para: {
+        fontSize: 12,
+        lineHeight: 1.55,
+        marginTop: 4,
+        color: 'var(--dsw-alias-label-secondary, inherit)',
+        whiteSpace: 'pre-wrap',
+        maxHeight: 120,
+        overflow: 'auto',
+      },
       row: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginTop: 5, minWidth: 0 },
       rowTitle: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
       button: {
@@ -551,7 +601,7 @@ window.__ModuleLoader__.load({
         fontSize: 11.5,
         padding: '2px 8px',
         borderRadius: 6,
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))',
         background: 'transparent',
         color: 'inherit',
         cursor: 'pointer',
@@ -680,7 +730,7 @@ window.__ModuleLoader__.load({
         t,
         icon: 'IconWarningOutlineRegular',
         title: `AI 任务台 · ${toolName} ${t('card.idea.failed')}`,
-        children: jsx.jsx('div', { style: { ...T.sub, color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: String(reason).slice(0, 400) }, 'why'),
+        children: jsx.jsx('div', { style: { ...T.sub, color: 'var(--aitm-fg-err, #d35)' }, children: String(reason).slice(0, 400) }, 'why'),
       });
     }
 
@@ -782,7 +832,7 @@ window.__ModuleLoader__.load({
             (meta.tags ?? []).slice(0, 6).map((tag) => jsx.jsx('span', { style: T.chip(null), children: String(tag) }, String(tag))),
             meta.repo ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(meta.repo) }, 'repo') : null,
           ] }, 'sub'),
-          jsx.jsx('div', { style: { ...T.sub, display: 'block', whiteSpace: 'pre-wrap', maxHeight: 96, overflow: 'auto' }, children: String(meta.description || t('card.ideaDetail.noBody')).slice(0, 400) }, 'body'),
+          jsx.jsx('div', { style: T.para, children: String(meta.description || t('card.ideaDetail.noBody')).slice(0, 400) }, 'body'),
           tasks.length
             ? jsx.jsxs('div', { style: { marginTop: 6 }, children: [
                 jsx.jsx('div', { style: { ...T.sub, marginTop: 0 }, children: t('card.ideaDetail.tasks') }, 'h'),
@@ -824,7 +874,7 @@ window.__ModuleLoader__.load({
             task.turns ? jsx.jsx('span', { children: t('card.task.turns', { n: String(task.turns) }) }, 'turn') : null,
             task.adapterId ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(task.adapterId) }, 'adapter') : null,
           ] }, 'sub'),
-          task.error ? jsx.jsx('div', { style: { ...T.sub, color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: String(task.error).slice(0, 300) }, 'err') : null,
+          task.error ? jsx.jsx('div', { style: { ...T.sub, color: 'var(--aitm-fg-err, #d35)' }, children: String(task.error).slice(0, 300) }, 'err') : null,
         ] }, 'body'),
       });
     }
@@ -973,7 +1023,7 @@ window.__ModuleLoader__.load({
             meta.baseRef ? jsx.jsx('span', { style: { opacity: 0.75 }, children: `→ ${String(meta.baseRef)}` }, 'base') : null,
             vd ? jsx.jsx('span', { style: T.chip(vd.ok ? 'succeeded' : 'failed'), children: vd.ok ? t('board.verifyOk') : t('board.verifyFail') }, 'v') : null,
           ] }, 'sub'),
-          vd && !vd.ok && vd.note ? jsx.jsx('div', { style: { ...T.sub, color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: String(vd.note).slice(0, 200) }, 'vnote') : null,
+          vd && !vd.ok && vd.note ? jsx.jsx('div', { style: { ...T.sub, color: 'var(--aitm-fg-err, #d35)' }, children: String(vd.note).slice(0, 200) }, 'vnote') : null,
           meta.detail ? jsx.jsx('div', { style: { ...T.sub, opacity: 0.85 }, children: String(meta.detail).slice(0, 240) }, 'detail') : null,
         ] }, 'body'),
       });
@@ -1016,13 +1066,13 @@ window.__ModuleLoader__.load({
 
     const BOARD = {
       wrap: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
-      toolbar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
+      toolbar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
       input: {
         flex: 1,
         minWidth: 90,
         background: 'transparent',
         color: 'inherit',
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))',
         borderRadius: 6,
         padding: '2px 7px',
         fontSize: 12,
@@ -1031,12 +1081,12 @@ window.__ModuleLoader__.load({
       select: {
         background: 'transparent',
         color: 'inherit',
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))',
         borderRadius: 6,
         padding: '1px 4px',
         fontSize: 12,
       },
-      counts: { padding: '4px 10px 5px', opacity: 0.7, fontSize: 11.5, borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none' },
+      counts: { padding: '4px 10px 5px', opacity: 0.7, fontSize: 11.5, borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none' },
       cols: { display: 'flex', gap: 6, padding: '6px 8px 8px', overflowX: 'auto', alignItems: 'flex-start', flex: 1, minHeight: 0, overflowY: 'auto' },
       /**
        * 列宽：桌面**定宽 172**；窄容器（手机）82% —— 一列占满大半、右侧露下一列示意可横滑。
@@ -1052,17 +1102,17 @@ window.__ModuleLoader__.load({
         width: NARROW_PANEL ? '82%' : 172,
         minWidth: 0,
         maxWidth: '100%',
-        background: over ? 'var(--dsh-color-fill, rgba(127,127,127,0.10))' : 'transparent',
+        background: over ? 'color-mix(in srgb, var(--dsw-alias-label-primary, currentColor) 6%, transparent)' : 'transparent',
         borderRadius: 8,
         padding: 4,
         minHeight: 40,
-        border: `1px dashed ${over ? 'var(--dsh-color-border, rgba(127,127,127,0.6))' : 'transparent'}`,
+        border: `1px dashed ${over ? 'var(--dsw-alias-border-l3, rgba(127,127,127,0.6))' : 'transparent'}`,
       }),
       colHead: { display: 'flex', alignItems: 'center', gap: 5, padding: '2px 4px 6px' },
       card: (sel) => ({
-        background: 'var(--dsh-color-fill, rgba(127,127,127,0.08))',
+        background: 'color-mix(in srgb, var(--dsw-alias-label-primary, currentColor) 5%, transparent)',
         ...(COARSE_POINTER ? { padding: '9px 9px' } : {}),
-        border: `1px solid ${sel ? 'var(--dsw-alias-state-business-primary, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.22))'}`,
+        border: `1px solid ${sel ? 'var(--dsw-alias-state-business-primary, rgba(80,140,255,0.9))' : 'var(--dsw-alias-border-l1, rgba(127,127,127,0.22))'}`,
         borderRadius: 8,
         padding: '6px 7px',
         marginBottom: 5,
@@ -1074,7 +1124,7 @@ window.__ModuleLoader__.load({
       star: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0, flex: 'none', opacity: 0.85, fontSize: 13, lineHeight: 1, ...TAP },
       /** 「改状态」那一排小按钮（详情里用；触屏上点得中） */
       chip: () => ({
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))',
         background: 'transparent',
         color: 'inherit',
         borderRadius: 999,
@@ -1118,7 +1168,7 @@ window.__ModuleLoader__.load({
         ...(idea.tags ?? []).slice(0, 2).map((tag) => jsx.jsx('span', { children: `#${String(tag)}` }, String(tag))),
         jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
         taskCount ? jsx.jsx('span', { style: { color: running ? 'var(--dsw-alias-state-business-primary, #4a8cff)' : undefined }, children: `⌘ ${String(taskCount)}` }, 'tasks') : null,
-        verifyFailed ? jsx.jsx('span', { style: { color: 'var(--dsw-alias-state-error-primary, #d35)' }, title: t('board.verifyFail'), children: '✗ 验证' }, 'v') : null,
+        verifyFailed ? jsx.jsx('span', { style: { color: 'var(--aitm-fg-err, #d35)' }, title: t('board.verifyFail'), children: '✗ 验证' }, 'v') : null,
         repo ? jsx.jsx('span', { children: repo }, 'repo') : null,
         jsx.jsx('span', { children: relTime(idea.updatedAt) }, 'time'),
       ].filter(Boolean);
@@ -1170,7 +1220,7 @@ window.__ModuleLoader__.load({
      */
     function BoardTaskRow({ x, t, editing, text, onToggleEditor, onText, onSend, onRetry }) {
       const active = ['queued', 'running', 'waiting_input'].includes(String(x.status));
-      return jsx.jsxs('div', { style: { borderTop: '1px solid var(--dsh-color-border, rgba(127,127,127,0.18))', padding: '5px 2px' }, 'data-task-row': x.id, children: [
+      return jsx.jsxs('div', { style: { borderTop: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.18))', padding: '5px 2px' }, 'data-task-row': x.id, children: [
         jsx.jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }, children: [
           taskStatusChip(x.status, t),
           jsx.jsx('span', { style: { opacity: 0.65, fontFamily: 'ui-monospace, monospace' }, children: String(x.id) }, 'id'),
@@ -1492,7 +1542,7 @@ window.__ModuleLoader__.load({
               jsx.jsx('a', { style: BOARD.link, onClick: () => void acceptTask(false), children: t('board.acceptOnly') }, 'only'),
               verify
                 ? jsx.jsx('span', {
-                    style: { color: verify.ok ? 'var(--dsw-alias-state-success-primary, #1a7f37)' : 'var(--dsw-alias-state-error-primary, #d35)', opacity: verify.ok ? 0.9 : 1 },
+                    style: { color: verify.ok ? 'var(--dsw-alias-state-success-primary, #1a7f37)' : 'var(--aitm-fg-err, #d35)', opacity: verify.ok ? 0.9 : 1 },
                     title: String(verify.note ?? ''),
                     children: verify.ok ? t('board.verifyOk') : t('board.verifyFail'),
                   }, 'v')
@@ -1600,7 +1650,7 @@ window.__ModuleLoader__.load({
             : null,
           jsx.jsx('span', { style: { marginLeft: 6, opacity: 0.7 }, children: `｜${t('board.filteredNote')}` }, 'note'),
         ] }, 'counts'),
-        note ? jsx.jsx('div', { style: { padding: '4px 10px', color: 'var(--dsw-alias-state-error-primary, #d35)', fontSize: 11.5 }, 'data-board-note': '1', children: note }, 'note') : null,
+        note ? jsx.jsx('div', { style: { padding: '4px 10px', color: 'var(--aitm-fg-err, #d35)', fontSize: 11.5 }, 'data-board-note': '1', children: note }, 'note') : null,
         data.error ? jsx.jsx('div', { style: { padding: '6px 10px', opacity: 0.9 }, children: `${t('card.idea.failed')}：${data.error}` }, 'err') : null,
         jsx.jsxs('div', { style: BOARD.cols, children: [
           ...IDEA_ORDER.map((st) =>
@@ -1714,8 +1764,8 @@ window.__ModuleLoader__.load({
 
     const CAL = {
       wrap: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
-      head: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
-      nav: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '1px 7px', fontSize: 12, ...TAP_WIDE },
+      head: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
+      nav: { border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '1px 7px', fontSize: 12, ...TAP_WIDE },
       month: { fontWeight: 600 },
       grid: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, padding: '6px 8px 0', flex: 'none' },
       dow: { textAlign: 'center', opacity: 0.6, fontSize: 11, padding: '2px 0' },
@@ -1729,12 +1779,12 @@ window.__ModuleLoader__.load({
         border: '1px solid transparent',
         opacity: inMonth ? 1 : 0.35,
         background: selected ? 'rgba(56,139,253,0.18)' : 'transparent',
-        borderColor: isToday ? 'var(--dsh-color-border, rgba(127,127,127,0.5))' : 'transparent',
+        borderColor: isToday ? 'var(--dsw-alias-border-l3, rgba(127,127,127,0.5))' : 'transparent',
         fontWeight: isToday ? 600 : 400,
       }),
       dots: { display: 'flex', justifyContent: 'center', gap: 3, height: 6, marginTop: 1 },
       dot: { width: 5, height: 5, borderRadius: 999, flex: 'none' },
-      detail: { flex: 1, minHeight: 0, overflow: 'auto', padding: '8px 10px 12px', borderTop: '1px solid var(--dsh-color-border, #d8dae0)' },
+      detail: { flex: 1, minHeight: 0, overflow: 'auto', padding: '8px 10px 12px', borderTop: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))' },
       sectionTitle: { opacity: 0.65, margin: '6px 0 4px' },
       item: { display: 'flex', gap: 6, alignItems: 'baseline', marginBottom: 3, cursor: 'pointer', minWidth: 0 },
       itemTitle: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
@@ -1856,7 +1906,7 @@ window.__ModuleLoader__.load({
         jsx.jsx(CalendarGrid, { days, ideasByDay, favsByDay, selected, onPick: pick, t }, 'grid'),
         jsx.jsxs('div', { style: CAL.detail, children: [
           jsx.jsx('div', { style: { fontWeight: 600 }, children: sel ? dayLabel(sel.date) : selected }, 'day'),
-          data.error ? jsx.jsx('div', { style: { color: 'var(--dsw-alias-state-error-primary, #d1242f)', marginTop: 6 }, children: `读数据失败：${data.error}` }, 'err') : null,
+          data.error ? jsx.jsx('div', { style: { color: 'var(--aitm-fg-err, #d35)', marginTop: 6 }, children: `读数据失败：${data.error}` }, 'err') : null,
           selIdeas.length
             ? jsx.jsxs('div', { children: [
                 jsx.jsx('div', { style: CAL.sectionTitle, children: `想法 ${selIdeas.length}` }, 'h'),
@@ -1920,7 +1970,7 @@ window.__ModuleLoader__.load({
       alignItems: 'center',
       gap: 8,
       padding: '6px 10px',
-      borderBottom: '1px solid var(--dsh-color-border, #d8dae0)',
+      borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
       fontSize: 12,
       flex: 'none',
     };
@@ -2030,7 +2080,7 @@ window.__ModuleLoader__.load({
                       !cfg.loading && cfg.repo
                         ? jsx.jsxs('div', { style: { marginTop: 10, fontSize: 11.5, opacity: 0.75, lineHeight: 1.6 }, children: [
                             jsx.jsx('div', { children: `仓库：${cfg.repo}` }, 'repo'),
-                            cfg.repoProblem ? jsx.jsx('div', { style: { color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: `自检：${cfg.repoProblem}` }, 'problem') : null,
+                            cfg.repoProblem ? jsx.jsx('div', { style: { color: 'var(--aitm-fg-err, #d35)' }, children: `自检：${cfg.repoProblem}` }, 'problem') : null,
                             cfg.tail?.length
                               ? jsx.jsxs('div', { children: [
                                   jsx.jsx('div', { style: { marginTop: 4 }, children: '后端日志（尾部）：' }, 't'),
@@ -2163,10 +2213,10 @@ window.__ModuleLoader__.load({
 
     const FEED = {
       wrap: { position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
-      bar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
-      nav: { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
+      bar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
+      nav: { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))', flex: 'none', flexWrap: 'wrap' },
       navBtn: (active) => ({
-        border: `1px solid ${active ? 'var(--dsw-alias-state-business-primary, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.35))'}`,
+        border: `1px solid ${active ? 'var(--dsw-alias-state-business-primary, rgba(80,140,255,0.9))' : 'var(--dsw-alias-border-l2, rgba(127,127,127,0.35))'}`,
         background: 'transparent',
         color: 'inherit',
         borderRadius: 999,
@@ -2175,23 +2225,23 @@ window.__ModuleLoader__.load({
         cursor: 'pointer',
         ...TAP_WIDE,
       }),
-      btn: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '2px 8px', fontSize: 12 },
+      btn: { border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '2px 8px', fontSize: 12 },
       body: { flex: 1, minHeight: 0, overflow: 'auto', padding: '6px 8px 12px' },
-      block: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.28))', borderRadius: 8, marginBottom: 8, overflow: 'hidden' },
+      block: { border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28))', borderRadius: 8, marginBottom: 8, overflow: 'hidden' },
       blockHead: { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px', flexWrap: 'wrap' },
       chip: (tone) => ({
         fontSize: 11,
         padding: '0 6px',
         borderRadius: 999,
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.28))',
+        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.28))',
         opacity: 0.9,
-        color: tone === 'bad' ? 'var(--dsw-alias-state-error-primary, #d35)' : tone === 'warn' ? 'var(--dsw-alias-state-warn-label, #bb8009)' : tone === 'ok' ? 'var(--dsw-alias-state-success-primary, #2ea043)' : undefined,
+        color: tone === 'bad' ? 'var(--aitm-fg-err, #d35)' : tone === 'warn' ? 'var(--dsw-alias-state-warn-label, #bb8009)' : tone === 'ok' ? 'var(--dsw-alias-state-success-primary, #2ea043)' : undefined,
       }),
       collapse: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 12, opacity: 0.75, padding: '0 2px' },
       tabs: { display: 'flex', gap: 4, padding: '0 8px 6px', flexWrap: 'wrap' },
       tab: (active) => ({
         border: '1px solid transparent',
-        background: active ? 'var(--dsh-color-fill, rgba(127,127,127,0.12))' : 'transparent',
+        background: active ? 'color-mix(in srgb, var(--dsw-alias-label-primary, currentColor) 8%, transparent)' : 'transparent',
         color: 'inherit',
         borderRadius: 6,
         cursor: 'pointer',
@@ -2204,10 +2254,10 @@ window.__ModuleLoader__.load({
       // min(232px, 100%)：窄屏（手机）下卡片铺满整行，不会横向溢出
       grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(232px, 100%), 1fr))', gap: 6, padding: '0 8px 8px' },
       card: {
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.22))',
+        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.22))',
         borderRadius: 8,
         padding: '6px 7px',
-        background: 'var(--dsh-color-fill, rgba(127,127,127,0.06))',
+        background: 'color-mix(in srgb, var(--dsw-alias-label-primary, currentColor) 4%, transparent)',
         display: 'flex',
         flexDirection: 'column',
         minWidth: 0,
@@ -2225,7 +2275,7 @@ window.__ModuleLoader__.load({
        */
       iconBtn: () => ({
         ...TAP,
-        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.3))',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.3))',
         background: 'transparent',
         color: 'inherit',
         borderRadius: 6,
@@ -2236,11 +2286,11 @@ window.__ModuleLoader__.load({
         textDecoration: 'none',
         flex: 'none',
       }),
-      fail: { display: 'flex', alignItems: 'center', gap: 5, margin: '0 8px 6px', padding: '4px 6px', borderRadius: 6, background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary, #d1242f) 12%, transparent)', color: 'var(--dsw-alias-state-error-primary, #d35)', fontSize: 11.5 },
+      fail: { display: 'flex', alignItems: 'center', gap: 5, margin: '0 8px 6px', padding: '4px 6px', borderRadius: 6, background: 'color-mix(in srgb, var(--aitm-fg-err, #d35) 12%, transparent)', color: 'var(--aitm-fg-err, #d35)', fontSize: 11.5 },
       progress: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 10px 6px', opacity: 0.85, fontSize: 11.5, flex: 'none' },
       overlay: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20, padding: 8 },
-      dialog: { background: 'var(--dsh-color-bg-elevated, #fff)', border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', borderRadius: 8, padding: 10, width: 'min(100%, 400px)', boxShadow: '0 6px 24px rgba(0,0,0,0.25)' },
-      input: { width: '100%', boxSizing: 'border-box', background: 'transparent', color: 'inherit', border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', borderRadius: 6, padding: '3px 6px', fontSize: 12, outline: 'none', marginTop: 4, fontFamily: 'inherit' },
+      dialog: { background: 'var(--dsw-alias-bg-layer-3, rgba(127,127,127,0.18))', border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', borderRadius: 8, padding: 10, width: 'min(100%, 400px)', boxShadow: '0 6px 24px rgba(0,0,0,0.25)' },
+      input: { width: '100%', boxSizing: 'border-box', background: 'transparent', color: 'inherit', border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))', borderRadius: 6, padding: '3px 6px', fontSize: 12, outline: 'none', marginTop: 4, fontFamily: 'inherit' },
     };
 
     /**
@@ -2666,7 +2716,7 @@ window.__ModuleLoader__.load({
             ? jsx.jsxs(
                 'div',
                 {
-                  style: { ...FEED.hint, color: 'var(--dsw-alias-state-error-primary, #d35)' },
+                  style: { ...FEED.hint, color: 'var(--aitm-fg-err, #d35)' },
                   children: [
                     t('feed.loadFailed', { msg: data.error }),
                     jsx.jsx('button', { type: 'button', style: { ...FEED.btn, marginLeft: 6 }, onClick: () => void load(), children: t('feed.retry') }, 'retry'),
@@ -2845,7 +2895,7 @@ window.__ModuleLoader__.load({
                                 'button',
                                 {
                                   type: 'button',
-                                  style: { ...FEED.btn, borderColor: 'var(--dsw-alias-state-error-primary, #d35)', color: 'var(--dsw-alias-state-error-primary, #d35)' },
+                                  style: { ...FEED.btn, borderColor: 'var(--aitm-fg-err, #d35)', color: 'var(--aitm-fg-err, #d35)' },
                                   onClick: () => {
                                     const item = pendingHide;
                                     setPendingHide(null);
@@ -2983,7 +3033,7 @@ window.__ModuleLoader__.load({
           row('错误', cfg.error ?? '无'),
         ] }, 'rows'),
         stale
-          ? jsx.jsx('p', { style: { fontSize: 12, color: 'var(--dsw-alias-state-error-primary, #d1242f)', marginTop: 8 }, children: '后端版本不匹配：这个实例没有 feed.* 接口，面板与工具都会失败。按上面的处理步骤换到最新仓库起的实例。' }, 'stale')
+          ? jsx.jsx('p', { style: { fontSize: 12, color: 'var(--aitm-fg-err, #d35)', marginTop: 8 }, children: '后端版本不匹配：这个实例没有 feed.* 接口，面板与工具都会失败。按上面的处理步骤换到最新仓库起的实例。' }, 'stale')
           : null,
         jsx.jsx('p', { style: { fontSize: 12, opacity: 0.7, marginTop: 8 }, children: '环境变量：AITM_REPO（仓库路径）/ AITM_URL（连已有实例）/ AITM_SPAWN=0（只连不起）/ AITM_SUBPROCESS=0（不让宿主托管 CLI 进程）。改完重启 DSH 客户端。' }, 'hint'),
         jsx.jsx('a', { style: { fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }, onClick: reload, children: '重新检查' }, 'reload'),
@@ -2993,6 +3043,9 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       // ⓪ 文案表（工具卡用 props.t 取）
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'aitm.dictionaries');
+      // ⓪′ 两套语义文字色（随 DSH 深浅主题自动切）—— 见 ensureThemeVars 的注释：
+      //     不注入的话，浅色主题下徽章文字用的是"深色主题的亮色"，糊到看不清
+      ensureThemeVars();
       // 「在面板里看」= 切到我们自己的右侧栏页签（没有会话时 openTab 会抛，吞掉即可）
       openAitmPanel = () => {
         try {
