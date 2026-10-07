@@ -373,6 +373,24 @@ async function checkRender() {
     status: 'done', ideas: [], repos: [], tasks: [], selected: null, onOpen: () => {}, onStar: () => {}, onDrop: () => {}, t: (k) => k,
   }));
   check('空列给「拖想法到这里」（不是一片空白）', emptyColHtml.includes('board.dropHere'));
+  /* 手机端（M3 最后一项）：窄屏不溢出 + 触摸能改状态 */
+  check(
+    '看板列宽是流体的（窄屏一列占满大半、露下一列示意可横滑；桌面端仍是 172px）',
+    colHtml.includes('min(172px, 82%)'),
+    colHtml.match(/flex-basis:[^;"]+/)?.[0] ?? '(没找到)',
+  );
+  {
+    // clientSrc 在后面才读，这里就近读一份（只 grep 源码字面量，不依赖加载顺序）
+    const src = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+    const ns = src.match(/name:\s*'(aitm[a-z0-9._-]*)'/)?.[1] ?? src.match(/'([a-z0-9._-]+)':\s*\{\s*'board\.back'/)?.[1] ?? null;
+    check(
+      '详情里有「改状态」一排（手机上 HTML5 拖拽不响应触摸，改状态得有别的路）',
+      src.includes("'data-board-move': '1'") && src.includes("'data-move': st") && (src.match(/'board\.moveTo'/g) ?? []).length >= 2,
+      `data-board-move + ${String((src.match(/'board\.moveTo'/g) ?? []).length)} 处文案键引用（中/英 + 组件）${ns ? ` · 命名空间 ${ns}` : ''}`,
+    );
+    // 合集网格：离线 HTML 只渲染空态（网格要数据面到了才出来），所以就地 grep 那行 CSS
+    check('合集网格列宽防溢出（窄屏 min(232px, 100%) → 卡片铺满整行）', src.includes('minmax(min(232px, 100%), 1fr)'));
+  }
 
   /* ---- 看板的口径钉在内核上：插件是独立包、不能 import 仓库源码，所以那几份副本
      （列序 / 列名）必须与 `src/shared/labels.ts` **逐字**一致 —— 内核改了这里就得跟着改。 ---- */
@@ -585,6 +603,37 @@ async function checkRender() {
       Object.keys(dict.zh ?? {}).filter((k) => k.startsWith('feed.')).length >= 60,
     `feed.* 键 ${String(Object.keys(dict.zh ?? {}).filter((k) => k.startsWith('feed.')).length)} 个`,
   );
+
+  /* ---- 触屏（手机 / 平板）：点按目标变大，桌面端一字不变 ---- */
+  {
+    let touchLoaded = null;
+    globalThis.window = { __ModuleLoader__: { load({ id, factory }) { touchLoaded = { id, exports: factory(require) }; } } };
+    globalThis.matchMedia = (q) => ({ matches: String(q).includes('pointer: coarse'), addEventListener: () => {}, removeEventListener: () => {} });
+    await import(`${pathToFileURL(path.join(ROOT, 'client.js')).href}?touch=${String(Date.now())}`);
+    const touchCtx = {
+      slots: { inject: (n, cb) => { cb(); return () => {}; }, register: () => () => {} },
+      sidebarRightTabs: { register: () => () => {} },
+      sidebarRight: { openTab: () => {}, openTabs: { getSnapshot: () => [] } },
+      locale: { register: () => () => {} },
+      effect: (f) => { const d = f(); return typeof d === 'function' ? d : () => {}; },
+    };
+    touchLoaded.exports.apply(touchCtx);
+    const TouchCol = touchLoaded.exports.__components.BoardColumn;
+    const touchColHtml = renderToStaticMarkup(React.createElement(TouchCol, {
+      status: 'ready', ideas: [{ id: 'i_1', title: '触屏', status: 'ready', tags: [], updatedAt: Date.now() }], repos: [], tasks: [], selected: null, onOpen: () => {}, onStar: () => {}, onDrop: () => {}, t: (k) => k,
+    }));
+    check('触屏（pointer:coarse）：列宽仍是流体的 + 点按目标抬到 30px', touchColHtml.includes('min(172px, 82%)') && touchColHtml.includes('min-height:30px'), touchColHtml.includes('min-height:30px') ? 'min-height:30px 在' : (touchColHtml.match(/min-height:\d+px/)?.[0] ?? '(没找到)'));
+    check('触屏：列宽流体（同一份代码，两种设备同一套布局）', touchColHtml.includes('min(172px, 82%)'));
+    check(
+      '触屏上卡片不给 draggable（触摸拖不起来，开着只会吃掉长按/滚动）—— 桌面仍是 true',
+      touchColHtml.includes('draggable="false"') && colHtml.includes('draggable="true"'),
+      `触屏 ${/draggable="(true|false)"/.exec(touchColHtml)?.[1] ?? '无'} / 桌面 ${/draggable="(true|false)"/.exec(colHtml)?.[1] ?? '无'}`,
+    );
+    check('非触屏（桌面）：点按目标**不被**放大（样式逐字没变）', !colHtml.includes('min-height:30px'));
+    globalThis.matchMedia = undefined;
+    // 还原 window（后面的卡片断言还要用原来那份 loaded）
+    globalThis.window = { __ModuleLoader__: { load() {} } };
+  }
 
   const brokenHtml = render({ phase: 'result', block: { kind: 'tool-result', callId: 'c1', call: null, content: [], isError: true, error: { name: 'RemoteError', code: 'E_BOOM' } } });
   check('异常块：不炸（渲染成失败卡）', /E_BOOM|失败|没写成/.test(brokenHtml), brokenHtml.slice(0, 80));

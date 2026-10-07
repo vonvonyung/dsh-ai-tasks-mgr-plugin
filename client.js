@@ -21,6 +21,23 @@ window.__ModuleLoader__.load({
     /** 客户端侧需要的服务：插槽注册表 + 右侧栏（页签类型表与打开页签的能力）+ 文案表 */
     const inject = ['slots', 'sidebarRight', 'sidebarRightTabs', 'locale'];
 
+    /**
+     * 触屏（手机 / 平板）判定：DSH 自己在 `@media (pointer:coarse)` 里把点按目标抬到 44px
+     * （见 dsh-client-ui-\* 的样式），我们的内联样式进不去媒体查询，所以在这里判一次。
+     * 只影响**点按面积**（按钮内边距、最小高度），不改布局与文案。
+     * 离线渲染 / jsdom 里没有 matchMedia → 当作非触屏（这也是桌面端的真实取值）。
+     */
+    const COARSE_POINTER = (() => {
+      try {
+        return typeof globalThis.matchMedia === 'function' && Boolean(globalThis.matchMedia('(pointer: coarse)')?.matches);
+      } catch {
+        return false;
+      }
+    })();
+    /** 触屏上给点按目标加的最小尺寸（非触屏是空对象，样式逐字不变） */
+    const TAP = COARSE_POINTER ? { minHeight: 30, minWidth: 30 } : {};
+    const TAP_WIDE = COARSE_POINTER ? { minHeight: 30, paddingLeft: 8, paddingRight: 8 } : {};
+
     /** 实现身份（tab 系统的唯一 id，也是 body/title 两个 keyed 槽的 key） */
     const TAB_ID = 'dsh-plugin-aitm';
     /** 类型判别符：openTab 用的名字 */
@@ -159,6 +176,7 @@ window.__ModuleLoader__.load({
       'board.filteredNote': '（计数始终是全量）',
       'board.counts': '全量：',
       'board.running': '执行中 {n} · 排队 {n2}',
+      'board.moveTo': '改状态：',
       'board.back': '← 返回看板',
       'board.openFull': '在完整面板里打开',
       'board.detailLoading': '正在取详情…',
@@ -311,6 +329,7 @@ window.__ModuleLoader__.load({
       'board.filteredNote': '(counts always cover everything)',
       'board.counts': 'All: ',
       'board.running': '{n} running · {n2} queued',
+      'board.moveTo': 'Move to:',
       'board.back': '← Back to board',
       'board.openFull': 'Open in full panel',
       'board.detailLoading': 'Loading details…',
@@ -831,8 +850,11 @@ window.__ModuleLoader__.load({
       counts: { padding: '4px 10px 5px', opacity: 0.7, fontSize: 11.5, borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none' },
       cols: { display: 'flex', gap: 6, padding: '6px 8px 8px', overflowX: 'auto', alignItems: 'flex-start', flex: 1, minHeight: 0, overflowY: 'auto' },
       col: (over) => ({
-        flex: 'none',
-        width: 172,
+        // 窄屏（手机）列宽跟着容器走：`min(172px, 82%)` —— 一列占满大半、右侧露出下一列的边
+        // （横滑的示意）；桌面端容器宽 >210px 时它就是原来的 172px，**视觉一字不变**。
+        flexGrow: 0,
+        flexShrink: 0,
+        flexBasis: 'min(172px, 82%)',
         background: over ? 'var(--dsh-color-fill, rgba(127,127,127,0.10))' : 'transparent',
         borderRadius: 8,
         padding: 4,
@@ -842,6 +864,7 @@ window.__ModuleLoader__.load({
       colHead: { display: 'flex', alignItems: 'center', gap: 5, padding: '2px 4px 6px' },
       card: (sel) => ({
         background: 'var(--dsh-color-fill, rgba(127,127,127,0.08))',
+        ...(COARSE_POINTER ? { padding: '9px 9px' } : {}),
         border: `1px solid ${sel ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.22))'}`,
         borderRadius: 8,
         padding: '6px 7px',
@@ -851,8 +874,19 @@ window.__ModuleLoader__.load({
       }),
       cardTitle: { display: 'flex', alignItems: 'flex-start', gap: 4, lineHeight: 1.35, wordBreak: 'break-word' },
       meta: { display: 'flex', alignItems: 'center', gap: 5, marginTop: 5, opacity: 0.75, fontSize: 11, flexWrap: 'wrap' },
-      star: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0, flex: 'none', opacity: 0.85, fontSize: 13, lineHeight: 1 },
-      link: { cursor: 'pointer', opacity: 0.75, flex: 'none' },
+      star: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0, flex: 'none', opacity: 0.85, fontSize: 13, lineHeight: 1, ...TAP },
+      /** 「改状态」那一排小按钮（详情里用；触屏上点得中） */
+      chip: () => ({
+        border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))',
+        background: 'transparent',
+        color: 'inherit',
+        borderRadius: 999,
+        cursor: 'pointer',
+        padding: '0 8px',
+        fontSize: 11.5,
+        ...TAP,
+      }),
+      link: { cursor: 'pointer', opacity: 0.75, flex: 'none', display: 'inline-flex', alignItems: 'center', ...TAP_WIDE },
     };
 
     /** 按状态分桶（纯函数，verify 离线断言它）；列序里没有的状态（如 archived）不进看板 */
@@ -893,7 +927,8 @@ window.__ModuleLoader__.load({
       ].filter(Boolean);
       return jsx.jsx('article', {
         style: BOARD.card(selected),
-        draggable: true,
+        // 触屏上不给 draggable：HTML5 拖拽**不响应触摸**（拖不起来），开着反而会吃掉长按/滚动
+      draggable: !COARSE_POINTER,
         'data-idea': idea.id,
         onDragStart: (e) => {
           try {
@@ -1189,6 +1224,32 @@ window.__ModuleLoader__.load({
             onOpenFull ? jsx.jsx('a', { style: BOARD.link, onClick: () => onOpenFull(detail.id), children: t('board.openFull') }, 'full') : null,
           ] }, 'bar'),
           acceptBar,
+          /* 「改状态」：手机上 HTML5 拖拽**不响应触摸**（拖不起来），所以详情里必须有一条点得动的路。
+             与拖拽走同一个 action（idea.setStatus），非法流转的报错也同一条口径。 */
+          jsx.jsxs(
+            'div',
+            {
+              style: { ...BOARD.toolbar, gap: 4, alignItems: 'center' },
+              'data-board-move': '1',
+              children: [
+                jsx.jsx('span', { style: { opacity: 0.7, flex: 'none' }, children: t('board.moveTo') }, 'label'),
+                ...IDEA_ORDER.filter((st) => st !== detail.meta?.status).map((st) =>
+                  jsx.jsx(
+                    'button',
+                    {
+                      type: 'button',
+                      style: BOARD.chip(),
+                      'data-move': st,
+                      onClick: () => void changeStatus(detail.id, st),
+                      children: t(`board.col.${st}`),
+                    },
+                    st,
+                  ),
+                ),
+              ],
+            },
+            'move',
+          ),
           acceptNote ? jsx.jsx('div', { style: { padding: '4px 10px', fontSize: 11.5, opacity: 0.9 }, 'data-board-accept-note': '1', children: acceptNote }, 'anote') : null,
           detail.loading
             ? jsx.jsx('div', { style: { padding: 14, opacity: 0.8 }, children: t('board.detailLoading') }, 'loading')
@@ -1341,8 +1402,8 @@ window.__ModuleLoader__.load({
 
     const CAL = {
       wrap: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, fontSize: 12.5 },
-      head: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none' },
-      nav: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '1px 7px', fontSize: 12 },
+      head: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
+      nav: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '1px 7px', fontSize: 12, ...TAP_WIDE },
       month: { fontWeight: 600 },
       grid: { display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2, padding: '6px 8px 0', flex: 'none' },
       dow: { textAlign: 'center', opacity: 0.6, fontSize: 11, padding: '2px 0' },
@@ -1350,6 +1411,7 @@ window.__ModuleLoader__.load({
         position: 'relative',
         textAlign: 'center',
         padding: '4px 0 2px',
+        ...(COARSE_POINTER ? { paddingTop: 6, paddingBottom: 5 } : {}),
         borderRadius: 6,
         cursor: 'pointer',
         border: '1px solid transparent',
@@ -1799,6 +1861,7 @@ window.__ModuleLoader__.load({
         padding: '1px 8px',
         fontSize: 11.5,
         cursor: 'pointer',
+        ...TAP_WIDE,
       }),
       btn: { border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', background: 'transparent', color: 'inherit', borderRadius: 6, cursor: 'pointer', padding: '2px 8px', fontSize: 12 },
       body: { flex: 1, minHeight: 0, overflow: 'auto', padding: '6px 8px 12px' },
@@ -1823,9 +1886,11 @@ window.__ModuleLoader__.load({
         padding: '1px 7px',
         fontSize: 11.5,
         opacity: active ? 1 : 0.75,
+        ...TAP_WIDE,
       }),
       hint: { opacity: 0.65, padding: '0 8px 6px', fontSize: 11.5, lineHeight: 1.5 },
-      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(232px, 1fr))', gap: 6, padding: '0 8px 8px' },
+      // min(232px, 100%)：窄屏（手机）下卡片铺满整行，不会横向溢出
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(232px, 100%), 1fr))', gap: 6, padding: '0 8px 8px' },
       card: {
         border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.22))',
         borderRadius: 8,
@@ -1842,6 +1907,7 @@ window.__ModuleLoader__.load({
       summary: { opacity: 0.7, marginTop: 4, fontSize: 11.5, lineHeight: 1.45, maxHeight: 50, overflow: 'hidden' },
       actions: { display: 'flex', alignItems: 'center', gap: 4, marginTop: 'auto', paddingTop: 6 },
       iconBtn: (on, primary) => ({
+        ...TAP,
         border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.3))',
         background: primary ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'transparent',
         color: primary ? '#fff' : on ? 'var(--dsh-color-accent, #4a8cff)' : 'inherit',
