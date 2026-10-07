@@ -302,8 +302,56 @@ async function checkRender() {
 
   const taskHtml = render({ toolName: 'aitm_task_status', phase: 'result', block: resultBlock({ kind: 'task', task: { id: 't_9', title: '加 --json 输出', status: 'running', turns: 3, adapterId: 'cli' } }) });
   check('任务卡：标题 + 状态 + 轮次', taskHtml.includes('加 --json 输出') && taskHtml.includes('running') && taskHtml.includes('3'));
+  {
+    /* 状态徽章语义色（2026-10-07 用户报「succeeded 是灰的」）：
+       ① 任务状态必须**各自有配色**（以前整张表都没有任务状态 ⇒ 成功/取消/排队全是同一坨灰）；
+       ② 前景色优先用**宿主的真令牌** `--dsw-alias-state-*`（以前写的是宿主根本没有的 `--dsh-color-*`）；
+       ③ 成功=绿、失败=红、跑=蓝、等回复=琥珀、排队/取消=灰。 */
+    const chipCss = (st) => {
+      const html = renderToStaticMarkup(
+        React.createElement(loaded.exports.__components.AitmToolCard, {
+          t: fakeT,
+          toolName: 'aitm_task_status',
+          phase: 'result',
+          block: resultBlock({ kind: 'task', task: { id: 't_9', title: 'x', status: st, turns: 1 } }),
+        }),
+      );
+      // 徽章自带 data-task-status，取它这一支的 style（别抓到卡片外层的 background/color）
+      return new RegExp(`style="([^"]*)"[^>]*data-task-status="${st}"`).exec(html)?.[1] ?? '';
+    };
+    const ok = chipCss('succeeded');
+    const bad = chipCss('failed');
+    const run = chipCss('running');
+    const queued = chipCss('queued');
+    check(
+      '任务状态有语义色：成功=绿、失败=红、跑=蓝、排队=灰（以前全是同一坨灰）',
+      ok.includes('success') && bad.includes('error') && run.includes('business') && queued.includes('label-tertiary'),
+      `succeeded=${ok} / failed=${bad}`,
+    );
+    check('配色把任务状态和已取消分开（succeeded ≠ cancelled 的样式）', ok !== chipCss('cancelled') && ok !== bad);
+    check(
+      '前景色优先取宿主的真令牌 --dsw-alias-state-*（旧代码写的 --dsh-color-* 宿主根本没有）',
+      // 只断言「状态徽章」这条路径用的是宿主真令牌；全库其它 `--dsh-color-*`（宿主没定义、一直走我们的兜底色）
+      // 属历史遗留，记在 HANDOVER 的待清理项里，不在这一批动（动它等于改全站配色，得能在真机看）
+      ok.includes('--dsw-alias-state-success-primary') && bad.includes('--dsw-alias-state-error-primary'),
+    );
+    check(
+      '状态徽章写本地化文案（succeeded → 已完成），原始状态名留在 title 里',
+      taskHtml.includes(locales.aitm.zh['card.task.st.running']) && /data-task-status="running"/.test(taskHtml),
+      taskHtml.match(/data-task-status="[a-z_]+"/)?.[0] ?? '(没找到)',
+    );
+  }
 
   const taskListHtml = render({ toolName: 'aitm_task_status', phase: 'result', block: resultBlock({ kind: 'task-list', items: [{ id: 't_1', title: '甲任务', status: 'succeeded', turns: 1 }, { id: 't_2', title: '乙任务', status: 'failed', turns: 2 }] }) });
+  {
+    // 同一张列表卡里，成功那条要绿、失败那条要红（离线 HTML 里直接查这两支的 style）
+    const styleOf = (st) => new RegExp(`style="([^"]*)"[^>]*data-task-status="${st}"`).exec(taskListHtml)?.[1] ?? '';
+    check(
+      '任务列表卡：同屏里成功=绿、失败=红（不再是同一坨灰）',
+      styleOf('succeeded').includes('success') && styleOf('failed').includes('error'),
+      `succeeded=${styleOf('succeeded').slice(0, 40)}…`,
+    );
+  }
   check('任务列表卡：两条都在', taskListHtml.includes('甲任务') && taskListHtml.includes('乙任务') && taskListHtml.includes('failed'));
 
   const calHtml = render({ toolName: 'aitm_calendar_day', phase: 'result', block: resultBlock({ kind: 'calendar', day: '2026-10-06', monthIdeas: 4, monthFavorites: 2, ideas: [{ id: 'a', title: '记一条想法', status: 'inbox' }], favorites: [{ title: '某条新闻', source: 'github' }] }) });

@@ -155,6 +155,12 @@ window.__ModuleLoader__.load({
       'card.ideaDetail.noBody': '（没有正文）',
       'card.task.title': '任务',
       'card.task.turns': '第 {n} 轮',
+      'card.task.st.queued': '排队中',
+      'card.task.st.running': '执行中',
+      'card.task.st.waiting_input': '等你回复',
+      'card.task.st.succeeded': '已完成',
+      'card.task.st.failed': '失败',
+      'card.task.st.cancelled': '已取消',
       'card.task.files': '{n} 个文件改动',
       'card.task.empty': '（还没有任务）',
       'card.calendar.title': '这一天',
@@ -320,6 +326,12 @@ window.__ModuleLoader__.load({
       'card.ideaDetail.noBody': '(no description)',
       'card.task.title': 'Task',
       'card.task.turns': 'turn {n}',
+      'card.task.st.queued': 'Queued',
+      'card.task.st.running': 'Running',
+      'card.task.st.waiting_input': 'Waiting for you',
+      'card.task.st.succeeded': 'Succeeded',
+      'card.task.st.failed': 'Failed',
+      'card.task.st.cancelled': 'Cancelled',
       'card.task.files': '{n} files changed',
       'card.task.empty': '(no tasks yet)',
       'card.calendar.title': 'This day',
@@ -467,15 +479,51 @@ window.__ModuleLoader__.load({
       'card.accept.needsAck': 'Verify failed — needs a human to tick "merge anyway"',
     };
 
-    /** 状态徽章配色（跟着 DSH 的语义色走，取不到就退回我们自己的） */
+    /**
+     * 语义色（状态徽章用）：**先取 DSH 宿主的设计令牌**，取不到才退回我们自己的色板。
+     *
+     * ⚠️ 2026-10-07 修：这里以前写的是 `--dsh-color-*` —— 那个前缀**宿主根本没有**（DSH 0.2.0-rc.2 用的是
+     * `--dsw-*`，见 `dsh-client-ui-theme`），所以一直是「取不到 → 退回硬编码色」。用户看到「succeeded 是灰的」
+     * 一半是因为这个；另一半见下面 `TASK_STATUS_COLOR`（任务状态压根没进配色表）。
+     * 背景优先用宿主的 `…-tertiary` 淡底令牌（深浅主题各一套）；宿主没有 tertiary 的（error）才用
+     * `color-mix(...)` 现兑（宿主自己也这么干，如 `--dsw-alias-label-shimmer`）。
+     */
+    const tone = (name) => {
+      const table = {
+        ok: ['var(--dsw-alias-state-success-tertiary, rgba(46,160,67,0.15))', 'var(--dsw-alias-state-success-primary, #1a7f37)'],
+        warn: ['var(--dsw-alias-state-warn-tertiary, rgba(219,171,10,0.18))', 'var(--dsw-alias-state-warn-label, #bb8009)'],
+        err: ['color-mix(in srgb, var(--dsw-alias-state-error-primary, #d1242f) 16%, transparent)', 'var(--dsw-alias-state-error-primary, #d1242f)'],
+        info: ['var(--dsw-alias-state-business-tertiary, rgba(56,139,253,0.15))', 'var(--dsw-alias-state-business-primary, #388bfd)'],
+        accent: ['rgba(163,113,247,0.18)', '#8957e5'],
+        grey: ['var(--dsw-alias-bg-layer-3, rgba(127,127,127,0.18))', 'var(--dsw-alias-label-tertiary, #6e7781)'],
+      };
+      return table[name] ?? table.grey;
+    };
+
+    /** 想法状态 → 语义色（与桌面端 `.pill.<status>` 同一套语义） */
     const STATUS_COLOR = {
-      inbox: ['rgba(56,139,253,0.15)', '#388bfd'],
-      scoping: ['rgba(219,171,10,0.18)', '#bb8009'],
-      ready: ['rgba(46,160,67,0.15)', '#2ea043'],
-      developing: ['rgba(163,113,247,0.18)', '#8957e5'],
-      review: ['rgba(219,171,10,0.18)', '#bb8009'],
-      done: ['rgba(46,160,67,0.15)', '#1a7f37'],
-      archived: ['rgba(127,127,127,0.18)', '#6e7781'],
+      inbox: tone('info'),
+      scoping: tone('warn'),
+      ready: tone('ok'),
+      developing: tone('accent'),
+      review: tone('warn'),
+      done: tone('ok'),
+      archived: tone('grey'),
+    };
+
+    /**
+     * **任务状态** → 语义色（与桌面端 `TaskPill` 的口径逐档对齐）：
+     * 成功=绿 · 失败=红 · 跑=蓝 · 等你回复=琥珀 · 排队/取消=灰。
+     * 用户 2026-10-07 问的那条（截图里 `succeeded` 是灰的）就是它——以前这张表**根本不存在**，
+     * 任务状态落进了 `T.chip` 的默认灰，所以「成功」和「已取消」长得一样。
+     */
+    const TASK_STATUS_COLOR = {
+      queued: tone('grey'),
+      running: tone('info'),
+      waiting_input: tone('warn'),
+      succeeded: tone('ok'),
+      failed: tone('err'),
+      cancelled: tone('grey'),
     };
     const T = {
       card: {
@@ -501,9 +549,10 @@ window.__ModuleLoader__.load({
         color: 'inherit',
         cursor: 'pointer',
       },
-      dot: (ok) => ({ width: 8, height: 8, borderRadius: 999, flex: 'none', background: ok ? '#2ea043' : '#d29922' }),
+      dot: (ok) => ({ width: 8, height: 8, borderRadius: 999, flex: 'none', background: ok ? 'var(--dsw-alias-state-success-primary, #2ea043)' : 'var(--dsw-alias-state-warn-primary, #d29922)' }),
       chip: (status) => {
-        const [bg, fg] = STATUS_COLOR[status] ?? ['rgba(127,127,127,0.18)', '#6e7781'];
+        // 任务状态优先（两张表里没有重名），都没有才落到灰
+        const [bg, fg] = TASK_STATUS_COLOR[status] ?? STATUS_COLOR[status] ?? tone('grey');
         return { fontSize: 11, lineHeight: '16px', padding: '0 6px', borderRadius: 999, background: bg, color: fg, flex: 'none' };
       },
       pre: {
@@ -555,9 +604,28 @@ window.__ModuleLoader__.load({
 
     const isMeta = (v) => v && typeof v === 'object' && !Array.isArray(v);
 
-    /** 状态徽章（文案就是状态名，颜色按语义分档） */
-    const statusChip = (status) =>
-      jsx.jsx('span', { style: T.chip(status), children: String(status ?? '?') }, 'chip');
+    /**
+     * 想法状态徽章：颜色按语义分档（`STATUS_COLOR`），**文案用本地化列名**（`board.col.*`，
+     * 与看板列头逐字一致：「review」显示成「待验收」）。找不到文案就退回原始状态名；
+     * `title` / `data-idea-status` 永远留原始值，排查用。
+     */
+    const statusChip = (status, t) => {
+      const st = String(status ?? '?');
+      const key = `board.col.${st}`;
+      const label = t ? t(key) : key;
+      return jsx.jsx('span', { style: T.chip(st), title: st, 'data-idea-status': st, children: label === key ? st : label }, 'chip');
+    };
+
+    /**
+     * 任务状态徽章：颜色见 `TASK_STATUS_COLOR`，文案用 `card.task.st.*`（与桌面端 `TASK_LABEL` 同口径：
+     * succeeded → 已完成）。`title` / `data-task-status` 留原始状态名。
+     */
+    const taskStatusChip = (status, t) => {
+      const st = String(status ?? '?');
+      const key = `card.task.st.${st}`;
+      const label = t ? t(key) : key;
+      return jsx.jsx('span', { style: T.chip(st), title: st, 'data-task-status': st, children: label === key ? st : label }, 'chip');
+    };
 
     /** 卡片骨架：左边一个小图标，右上角「在面板里看」 */
     function Card({ icon, title, children, accent, t }) {
@@ -605,7 +673,7 @@ window.__ModuleLoader__.load({
         t,
         icon: 'IconWarningOutlineRegular',
         title: `AI 任务台 · ${toolName} ${t('card.idea.failed')}`,
-        children: jsx.jsx('div', { style: { ...T.sub, color: '#d1242f' }, children: String(reason).slice(0, 400) }, 'why'),
+        children: jsx.jsx('div', { style: { ...T.sub, color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: String(reason).slice(0, 400) }, 'why'),
       });
     }
 
@@ -619,7 +687,7 @@ window.__ModuleLoader__.load({
         title: `${title}`,
         accent: true,
         children: jsx.jsxs('div', { style: T.sub, children: [
-          statusChip(meta.status),
+          statusChip(meta.status, t),
           jsx.jsx('span', { children: changed ? t('card.idea.changed') : t('card.idea.created') }, 'what'),
           meta.id ? jsx.jsx('span', { style: { opacity: 0.6 }, children: `${t('card.idea.id')} ${String(meta.id)}` }, 'id') : null,
         ] }, 'sub'),
@@ -641,7 +709,7 @@ window.__ModuleLoader__.load({
             : null,
           rows.length
             ? rows.slice(0, 6).map((i) => jsx.jsxs('div', { style: T.row, children: [
-                statusChip(i.status),
+                statusChip(i.status, t),
                 jsx.jsx('span', { style: T.rowTitle, children: String(i.title ?? i.id) }, 't'),
               ] }, String(i.id)))
             : jsx.jsx('div', { style: T.sub, children: t('card.ideaList.empty') }, 'empty'),
@@ -702,7 +770,7 @@ window.__ModuleLoader__.load({
         accent: true,
         children: jsx.jsxs('div', { children: [
           jsx.jsxs('div', { style: T.sub, children: [
-            statusChip(meta.status),
+            statusChip(meta.status, t),
             meta.priority ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(meta.priority) }, 'p') : null,
             (meta.tags ?? []).slice(0, 6).map((tag) => jsx.jsx('span', { style: T.chip(null), children: String(tag) }, String(tag))),
             meta.repo ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(meta.repo) }, 'repo') : null,
@@ -712,7 +780,7 @@ window.__ModuleLoader__.load({
             ? jsx.jsxs('div', { style: { marginTop: 6 }, children: [
                 jsx.jsx('div', { style: { ...T.sub, marginTop: 0 }, children: t('card.ideaDetail.tasks') }, 'h'),
                 tasks.slice(0, 5).map((x) => jsx.jsxs('div', { style: T.row, children: [
-                  jsx.jsx('span', { style: T.chip(null), children: String(x.status) }, 'st'),
+                  taskStatusChip(x.status, t),
                   jsx.jsx('span', { style: T.rowTitle, children: String(x.id) }, 'id'),
                 ] }, String(x.id))),
               ] }, 'tasks')
@@ -730,7 +798,7 @@ window.__ModuleLoader__.load({
           title: `${t('card.task.title')} · ${String(meta.items.length)}`,
           children: meta.items.length
             ? jsx.jsx('div', { children: meta.items.slice(0, 8).map((x) => jsx.jsxs('div', { style: T.row, children: [
-                jsx.jsx('span', { style: T.chip(null), children: String(x.status) }, 'st'),
+                taskStatusChip(x.status, t),
                 jsx.jsx('span', { style: T.rowTitle, children: String(x.title ?? x.id) }, 't'),
                 x.turns ? jsx.jsx('span', { style: { opacity: 0.6, flex: 'none' }, children: t('card.task.turns', { n: String(x.turns) }) }, 'turn') : null,
               ] }, String(x.id))) }, 'list')
@@ -745,12 +813,11 @@ window.__ModuleLoader__.load({
         accent: true,
         children: jsx.jsxs('div', { children: [
           jsx.jsxs('div', { style: T.sub, children: [
-            statusChip(null),
-            jsx.jsx('span', { style: T.chip(null), children: String(task.status ?? '?') }, 'st'),
+            taskStatusChip(task.status, t),
             task.turns ? jsx.jsx('span', { children: t('card.task.turns', { n: String(task.turns) }) }, 'turn') : null,
             task.adapterId ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(task.adapterId) }, 'adapter') : null,
           ] }, 'sub'),
-          task.error ? jsx.jsx('div', { style: { ...T.sub, color: '#d1242f' }, children: String(task.error).slice(0, 300) }, 'err') : null,
+          task.error ? jsx.jsx('div', { style: { ...T.sub, color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: String(task.error).slice(0, 300) }, 'err') : null,
         ] }, 'body'),
       });
     }
@@ -768,7 +835,7 @@ window.__ModuleLoader__.load({
           ideas.length || favs.length
             ? jsx.jsxs('div', { children: [
                 ideas.slice(0, 6).map((i) => jsx.jsxs('div', { style: T.row, children: [
-                  statusChip(i.status),
+                  statusChip(i.status, t),
                   jsx.jsx('span', { style: T.rowTitle, children: String(i.title ?? i.id) }, 't'),
                 ] }, `i-${String(i.id)}`)),
                 favs.slice(0, 4).map((f, idx) => jsx.jsxs('div', { style: T.row, children: [
@@ -897,9 +964,9 @@ window.__ModuleLoader__.load({
           jsx.jsxs('div', { style: T.sub, children: [
             jsx.jsx('span', { style: T.chip(null), children: merged ? t('card.accept.merged') : t('card.accept.recorded') }, 'k'),
             meta.baseRef ? jsx.jsx('span', { style: { opacity: 0.75 }, children: `→ ${String(meta.baseRef)}` }, 'base') : null,
-            vd ? jsx.jsx('span', { style: T.chip(vd.ok ? null : '#f2b03d'), children: vd.ok ? t('board.verifyOk') : t('board.verifyFail') }, 'v') : null,
+            vd ? jsx.jsx('span', { style: T.chip(vd.ok ? 'succeeded' : 'failed'), children: vd.ok ? t('board.verifyOk') : t('board.verifyFail') }, 'v') : null,
           ] }, 'sub'),
-          vd && !vd.ok && vd.note ? jsx.jsx('div', { style: { ...T.sub, color: '#d1242f' }, children: String(vd.note).slice(0, 200) }, 'vnote') : null,
+          vd && !vd.ok && vd.note ? jsx.jsx('div', { style: { ...T.sub, color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: String(vd.note).slice(0, 200) }, 'vnote') : null,
           meta.detail ? jsx.jsx('div', { style: { ...T.sub, opacity: 0.85 }, children: String(meta.detail).slice(0, 240) }, 'detail') : null,
         ] }, 'body'),
       });
@@ -988,7 +1055,7 @@ window.__ModuleLoader__.load({
       card: (sel) => ({
         background: 'var(--dsh-color-fill, rgba(127,127,127,0.08))',
         ...(COARSE_POINTER ? { padding: '9px 9px' } : {}),
-        border: `1px solid ${sel ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.22))'}`,
+        border: `1px solid ${sel ? 'var(--dsw-alias-state-business-primary, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.22))'}`,
         borderRadius: 8,
         padding: '6px 7px',
         marginBottom: 5,
@@ -1043,8 +1110,8 @@ window.__ModuleLoader__.load({
         pri ? jsx.jsx('span', { children: pri }, 'pri') : null,
         ...(idea.tags ?? []).slice(0, 2).map((tag) => jsx.jsx('span', { children: `#${String(tag)}` }, String(tag))),
         jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
-        taskCount ? jsx.jsx('span', { style: { color: running ? 'var(--dsh-color-accent, #4a8cff)' : undefined }, children: `⌘ ${String(taskCount)}` }, 'tasks') : null,
-        verifyFailed ? jsx.jsx('span', { style: { color: 'var(--dsh-color-danger, #d35)' }, title: t('board.verifyFail'), children: '✗ 验证' }, 'v') : null,
+        taskCount ? jsx.jsx('span', { style: { color: running ? 'var(--dsw-alias-state-business-primary, #4a8cff)' : undefined }, children: `⌘ ${String(taskCount)}` }, 'tasks') : null,
+        verifyFailed ? jsx.jsx('span', { style: { color: 'var(--dsw-alias-state-error-primary, #d35)' }, title: t('board.verifyFail'), children: '✗ 验证' }, 'v') : null,
         repo ? jsx.jsx('span', { children: repo }, 'repo') : null,
         jsx.jsx('span', { children: relTime(idea.updatedAt) }, 'time'),
       ].filter(Boolean);
@@ -1098,7 +1165,7 @@ window.__ModuleLoader__.load({
       const active = ['queued', 'running', 'waiting_input'].includes(String(x.status));
       return jsx.jsxs('div', { style: { borderTop: '1px solid var(--dsh-color-border, rgba(127,127,127,0.18))', padding: '5px 2px' }, 'data-task-row': x.id, children: [
         jsx.jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }, children: [
-          jsx.jsx('span', { style: { opacity: 0.85 }, children: String(x.status) }, 'st'),
+          taskStatusChip(x.status, t),
           jsx.jsx('span', { style: { opacity: 0.65, fontFamily: 'ui-monospace, monospace' }, children: String(x.id) }, 'id'),
           x.turns ? jsx.jsx('span', { style: { opacity: 0.6 }, children: `${String(x.turns)} 轮` }, 'turn') : null,
           active
@@ -1418,7 +1485,7 @@ window.__ModuleLoader__.load({
               jsx.jsx('a', { style: BOARD.link, onClick: () => void acceptTask(false), children: t('board.acceptOnly') }, 'only'),
               verify
                 ? jsx.jsx('span', {
-                    style: { color: verify.ok ? undefined : 'var(--dsh-color-danger, #d35)', opacity: verify.ok ? 0.7 : 1 },
+                    style: { color: verify.ok ? 'var(--dsw-alias-state-success-primary, #1a7f37)' : 'var(--dsw-alias-state-error-primary, #d35)', opacity: verify.ok ? 0.9 : 1 },
                     title: String(verify.note ?? ''),
                     children: verify.ok ? t('board.verifyOk') : t('board.verifyFail'),
                   }, 'v')
@@ -1526,7 +1593,7 @@ window.__ModuleLoader__.load({
             : null,
           jsx.jsx('span', { style: { marginLeft: 6, opacity: 0.7 }, children: `｜${t('board.filteredNote')}` }, 'note'),
         ] }, 'counts'),
-        note ? jsx.jsx('div', { style: { padding: '4px 10px', color: 'var(--dsh-color-danger, #d35)', fontSize: 11.5 }, 'data-board-note': '1', children: note }, 'note') : null,
+        note ? jsx.jsx('div', { style: { padding: '4px 10px', color: 'var(--dsw-alias-state-error-primary, #d35)', fontSize: 11.5 }, 'data-board-note': '1', children: note }, 'note') : null,
         data.error ? jsx.jsx('div', { style: { padding: '6px 10px', opacity: 0.9 }, children: `${t('card.idea.failed')}：${data.error}` }, 'err') : null,
         jsx.jsxs('div', { style: BOARD.cols, children: [
           ...IDEA_ORDER.map((st) =>
@@ -1687,7 +1754,7 @@ window.__ModuleLoader__.load({
               'data-day': d.key,
               children: [
                 jsx.jsx('div', { children: String(d.day) }, 'n'),
-                jsx.jsx('div', { style: CAL.dots, children: [dot(ni, '#388bfd'), dot(nf, '#bb8009')] }, 'dots'),
+                jsx.jsx('div', { style: CAL.dots, children: [dot(ni, 'var(--dsw-alias-state-business-primary, #388bfd)'), dot(nf, 'var(--dsw-alias-state-warn-label, #bb8009)')] }, 'dots'),
               ],
             },
             d.key,
@@ -1782,7 +1849,7 @@ window.__ModuleLoader__.load({
         jsx.jsx(CalendarGrid, { days, ideasByDay, favsByDay, selected, onPick: pick, t }, 'grid'),
         jsx.jsxs('div', { style: CAL.detail, children: [
           jsx.jsx('div', { style: { fontWeight: 600 }, children: sel ? dayLabel(sel.date) : selected }, 'day'),
-          data.error ? jsx.jsx('div', { style: { color: '#d1242f', marginTop: 6 }, children: `读数据失败：${data.error}` }, 'err') : null,
+          data.error ? jsx.jsx('div', { style: { color: 'var(--dsw-alias-state-error-primary, #d1242f)', marginTop: 6 }, children: `读数据失败：${data.error}` }, 'err') : null,
           selIdeas.length
             ? jsx.jsxs('div', { children: [
                 jsx.jsx('div', { style: CAL.sectionTitle, children: `想法 ${selIdeas.length}` }, 'h'),
@@ -1791,7 +1858,7 @@ window.__ModuleLoader__.load({
                   onClick: () => onOpenIdea?.(i.id),
                   title: '在面板里打开',
                   children: [
-                    statusChip(i.status),
+                    statusChip(i.status, t),
                     jsx.jsx('span', { style: CAL.itemTitle, children: String(i.title ?? i.id) }, 't'),
                   ],
                 }, String(i.id))),
@@ -1850,7 +1917,7 @@ window.__ModuleLoader__.load({
       fontSize: 12,
       flex: 'none',
     };
-    const DOT = (ok) => ({ width: 8, height: 8, borderRadius: 999, background: ok ? '#2ea043' : '#d29922', flex: 'none' });
+    const DOT = (ok) => ({ width: 8, height: 8, borderRadius: 999, background: ok ? 'var(--dsw-alias-state-success-primary, #2ea043)' : 'var(--dsw-alias-state-warn-primary, #d29922)', flex: 'none' });
     const LINK = { marginLeft: 'auto', textDecoration: 'underline', cursor: 'pointer', opacity: 0.8 };
 
     /** ① 页签主体：健康条 + 视图切换 + iframe（?embed=1：藏掉我们自己的导航，避免两层） */
@@ -1956,7 +2023,7 @@ window.__ModuleLoader__.load({
                       !cfg.loading && cfg.repo
                         ? jsx.jsxs('div', { style: { marginTop: 10, fontSize: 11.5, opacity: 0.75, lineHeight: 1.6 }, children: [
                             jsx.jsx('div', { children: `仓库：${cfg.repo}` }, 'repo'),
-                            cfg.repoProblem ? jsx.jsx('div', { style: { color: '#d1242f' }, children: `自检：${cfg.repoProblem}` }, 'problem') : null,
+                            cfg.repoProblem ? jsx.jsx('div', { style: { color: 'var(--dsw-alias-state-error-primary, #d1242f)' }, children: `自检：${cfg.repoProblem}` }, 'problem') : null,
                             cfg.tail?.length
                               ? jsx.jsxs('div', { children: [
                                   jsx.jsx('div', { style: { marginTop: 4 }, children: '后端日志（尾部）：' }, 't'),
@@ -2092,7 +2159,7 @@ window.__ModuleLoader__.load({
       bar: { display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
       nav: { display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderBottom: '1px solid var(--dsh-color-border, #d8dae0)', flex: 'none', flexWrap: 'wrap' },
       navBtn: (active) => ({
-        border: `1px solid ${active ? 'var(--dsh-color-accent, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.35))'}`,
+        border: `1px solid ${active ? 'var(--dsw-alias-state-business-primary, rgba(80,140,255,0.9))' : 'var(--dsh-color-border, rgba(127,127,127,0.35))'}`,
         background: 'transparent',
         color: 'inherit',
         borderRadius: 999,
@@ -2111,7 +2178,7 @@ window.__ModuleLoader__.load({
         borderRadius: 999,
         border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.28))',
         opacity: 0.9,
-        color: tone === 'bad' ? 'var(--dsh-color-danger, #d35)' : tone === 'warn' ? '#bb8009' : tone === 'ok' ? 'var(--dsh-color-success, #2ea043)' : undefined,
+        color: tone === 'bad' ? 'var(--dsw-alias-state-error-primary, #d35)' : tone === 'warn' ? 'var(--dsw-alias-state-warn-label, #bb8009)' : tone === 'ok' ? 'var(--dsw-alias-state-success-primary, #2ea043)' : undefined,
       }),
       collapse: { border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 12, opacity: 0.75, padding: '0 2px' },
       tabs: { display: 'flex', gap: 4, padding: '0 8px 6px', flexWrap: 'wrap' },
@@ -2162,7 +2229,7 @@ window.__ModuleLoader__.load({
         textDecoration: 'none',
         flex: 'none',
       }),
-      fail: { display: 'flex', alignItems: 'center', gap: 5, margin: '0 8px 6px', padding: '4px 6px', borderRadius: 6, background: 'rgba(209,36,47,0.10)', color: 'var(--dsh-color-danger, #d35)', fontSize: 11.5 },
+      fail: { display: 'flex', alignItems: 'center', gap: 5, margin: '0 8px 6px', padding: '4px 6px', borderRadius: 6, background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary, #d1242f) 12%, transparent)', color: 'var(--dsw-alias-state-error-primary, #d35)', fontSize: 11.5 },
       progress: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 10px 6px', opacity: 0.85, fontSize: 11.5, flex: 'none' },
       overlay: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 20, padding: 8 },
       dialog: { background: 'var(--dsh-color-bg-elevated, #fff)', border: '1px solid var(--dsh-color-border, rgba(127,127,127,0.35))', borderRadius: 8, padding: 10, width: 'min(100%, 400px)', boxShadow: '0 6px 24px rgba(0,0,0,0.25)' },
@@ -2592,7 +2659,7 @@ window.__ModuleLoader__.load({
             ? jsx.jsxs(
                 'div',
                 {
-                  style: { ...FEED.hint, color: 'var(--dsh-color-danger, #d35)' },
+                  style: { ...FEED.hint, color: 'var(--dsw-alias-state-error-primary, #d35)' },
                   children: [
                     t('feed.loadFailed', { msg: data.error }),
                     jsx.jsx('button', { type: 'button', style: { ...FEED.btn, marginLeft: 6 }, onClick: () => void load(), children: t('feed.retry') }, 'retry'),
@@ -2771,7 +2838,7 @@ window.__ModuleLoader__.load({
                                 'button',
                                 {
                                   type: 'button',
-                                  style: { ...FEED.btn, borderColor: 'var(--dsh-color-danger, #d35)', color: 'var(--dsh-color-danger, #d35)' },
+                                  style: { ...FEED.btn, borderColor: 'var(--dsw-alias-state-error-primary, #d35)', color: 'var(--dsw-alias-state-error-primary, #d35)' },
                                   onClick: () => {
                                     const item = pendingHide;
                                     setPendingHide(null);
@@ -2826,7 +2893,7 @@ window.__ModuleLoader__.load({
                                 'button',
                                 {
                                   type: 'button',
-                                  style: { ...FEED.btn, borderColor: 'var(--dsh-color-accent, #4a8cff)', color: 'var(--dsh-color-accent, #4a8cff)' },
+                                  style: { ...FEED.btn, borderColor: 'var(--dsw-alias-state-business-primary, #4a8cff)', color: 'var(--dsw-alias-state-business-primary, #4a8cff)' },
                                   onClick: () => void createIdea(),
                                   children: t('feed.prefillSave'),
                                 },
@@ -2909,7 +2976,7 @@ window.__ModuleLoader__.load({
           row('错误', cfg.error ?? '无'),
         ] }, 'rows'),
         stale
-          ? jsx.jsx('p', { style: { fontSize: 12, color: '#d1242f', marginTop: 8 }, children: '后端版本不匹配：这个实例没有 feed.* 接口，面板与工具都会失败。按上面的处理步骤换到最新仓库起的实例。' }, 'stale')
+          ? jsx.jsx('p', { style: { fontSize: 12, color: 'var(--dsw-alias-state-error-primary, #d1242f)', marginTop: 8 }, children: '后端版本不匹配：这个实例没有 feed.* 接口，面板与工具都会失败。按上面的处理步骤换到最新仓库起的实例。' }, 'stale')
           : null,
         jsx.jsx('p', { style: { fontSize: 12, opacity: 0.7, marginTop: 8 }, children: '环境变量：AITM_REPO（仓库路径）/ AITM_URL（连已有实例）/ AITM_SPAWN=0（只连不起）/ AITM_SUBPROCESS=0（不让宿主托管 CLI 进程）。改完重启 DSH 客户端。' }, 'hint'),
         jsx.jsx('a', { style: { fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }, onClick: reload, children: '重新检查' }, 'reload'),
