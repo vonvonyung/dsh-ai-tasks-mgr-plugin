@@ -354,12 +354,20 @@ window.__ModuleLoader__.load({
       'ov.updated': '更新于 {t}',
       'ov.backChat': '回到对话',
       'ov.openFailed': '没能打开右侧栏「AI 任务台」：{msg}（可从右侧栏的「+」手动打开）',
-      'ov.openFellBack': '这个会话的右侧栏还没就绪，已改从对话打开（下次点就正常了）',
-      'ov.clickHintStay': '点＝留在总览、右栏打开详情；Ctrl/⌘+点＝回对话打开',
-      'ov.clickHintJump': '点＝回对话打开；Ctrl/⌘+点＝留在总览、右栏开详情',
+      'ov.clickHintStay': '点＝留在总览、详情开在这里；Ctrl/⌘+点＝回对话、右栏打开',
+      'ov.clickHintJump': '点＝回对话、右栏打开；Ctrl/⌘+点＝留在总览、详情开在这里',
       'ov.clickPref': '总览里点想法',
-      'ov.clickPrefStay': '留在总览（右栏开详情）',
-      'ov.clickPrefJump': '回对话打开',
+      'ov.clickPrefStay': '留在总览（详情开在总览里）',
+      'ov.clickPrefJump': '回对话打开（右栏看详情）',
+      'ov.drawerTitle': '想法详情',
+      'ov.noBody': '（没有正文）',
+      'ov.tags': '标签',
+      'ov.spec': '规格',
+      'ov.tasks': '任务',
+      'ov.detailLoading': '正在取详情…',
+      'ov.detailFailed': '取详情失败：{msg}',
+      'ov.openFull': '打开完整面板',
+      'ov.close': '关闭',
       'ov.clickPrefHint': 'Ctrl/⌘+点击临时用另一种方式；设置存在本机浏览器里',
     };
     const en = {
@@ -578,12 +586,20 @@ window.__ModuleLoader__.load({
       'ov.updated': 'Updated {t}',
       'ov.backChat': 'Back to chat',
       'ov.openFailed': 'Could not open the AI Tasks tab in the right sidebar: {msg} (open it from the sidebar’s “+” menu)',
-      'ov.openFellBack': 'This session’s sidebar is not ready yet, opened from the conversation instead (next click should be fine)',
-      'ov.clickHintStay': 'Click: stay in Overview, open the detail in the right sidebar; Ctrl/⌘+click: open from the conversation',
-      'ov.clickHintJump': 'Click: open from the conversation; Ctrl/⌘+click: stay in Overview, open in the right sidebar',
+      'ov.clickHintStay': 'Click: stay in Overview, detail opens here; Ctrl/⌘+click: open from the conversation (right sidebar)',
+      'ov.clickHintJump': 'Click: open from the conversation (right sidebar); Ctrl/⌘+click: stay in Overview, detail opens here',
       'ov.clickPref': 'Clicking an idea in Overview',
-      'ov.clickPrefStay': 'Stay in Overview (detail in the right sidebar)',
-      'ov.clickPrefJump': 'Open from the conversation',
+      'ov.clickPrefStay': 'Stay in Overview (detail opens inside)',
+      'ov.clickPrefJump': 'Open from the conversation (right sidebar)',
+      'ov.drawerTitle': 'Idea detail',
+      'ov.noBody': '(no description)',
+      'ov.tags': 'Tags',
+      'ov.spec': 'Spec',
+      'ov.tasks': 'Tasks',
+      'ov.detailLoading': 'Loading detail…',
+      'ov.detailFailed': 'Could not load the detail: {msg}',
+      'ov.openFull': 'Open full panel',
+      'ov.close': 'Close',
       'ov.clickPrefHint': 'Ctrl/⌘+click temporarily uses the other way; the setting lives in this browser',
     };
 
@@ -1928,27 +1944,34 @@ window.__ModuleLoader__.load({
     /* ─────────── 总览里「点一条想法」往哪走（可配置） ───────────
 
        两种走法：
-         stay = 留在总览：走右栏控制器的内部通道 openTabIn(sessionId, kind) 悄悄开页签
-                （不开这个通道的话，公开的 openTab 只在「对话占着主列」时可用 —— 见 openIdeaInSidebar 注释）；
-                宿主开页签的动作自带 `planSetExpanded(state, true)` ⇒ 右栏列会自己展开、页签被聚焦。
-         jump = 回对话再开（公开 API；一定会成功，但会离开总览）。
+         inline = 留在总览：详情**开在总览自己身上**（右侧抽屉）。完全不碰宿主导航 ——
+                  这是唯一在架构上成立的「留在总览看详情」：
+                  · 宿主的「当前会话」＝ 会话里 `retainedBy.mainView > 0` 的那个
+                    （dsh-client-ui-session 的 publishMain 原文），而主列的 Session binding
+                    **只给保留 key `conversation`**（插槽目录原文 "other keys receive no Session binding"）
+                    ⇒ 总览占着主列时，当前会话是 undefined；
+                  · 右栏又按 `views.select(current.getSnapshot().key)` 选会话视图，每个视图是
+                    `hidden: !active` ⇒ 右栏会把会话视图**全部藏起来**（页签开出来也没东西画）。
+                  2026-10-08 真机实测：想「留在总览 + 右栏开详情」的结果全部落到兜底＝回对话。
+         jump   = 回对话再开：先 `selectPanel(null)` 把主列还给对话，再公开 `openTab` 开右栏页签
+                  （会离开总览，但一定有得看；右栏详情由页签自己摊开）。
 
-       可配置：`aitm.overview.clickMode`（localStorage，'stay' 默认 / 'jump'）＝点一下的走法；
+       可配置：`aitm.overview.clickMode`（localStorage，'inline' 默认 / 'jump'）＝点一下的走法；
        **Ctrl/⌘+点击总是走另一种**（临时反向，不用去改设置）。设置节里有对应的两项。
-       注意：localStorage 在隐私模式/离线渲染里会抛 ⇒ 全程 try/catch，读不到就按默认 stay。 */
+       注意：localStorage 在隐私模式/离线渲染里会抛 ⇒ 全程 try/catch，读不到就按默认 inline。 */
     const OV_CLICK_KEY = 'aitm.overview.clickMode';
 
     function ovClickMode() {
       try {
-        return globalThis.localStorage?.getItem?.(OV_CLICK_KEY) === 'jump' ? 'jump' : 'stay';
+        return globalThis.localStorage?.getItem?.(OV_CLICK_KEY) === 'jump' ? 'jump' : 'inline';
       } catch {
-        return 'stay';
+        return 'inline';
       }
     }
 
     function ovSetClickMode(v) {
       try {
-        globalThis.localStorage?.setItem?.(OV_CLICK_KEY, v === 'jump' ? 'jump' : 'stay');
+        globalThis.localStorage?.setItem?.(OV_CLICK_KEY, v === 'jump' ? 'jump' : 'inline');
       } catch {
         /* 存不下就算了：本次会话仍按默认走 */
       }
@@ -1957,55 +1980,32 @@ window.__ModuleLoader__.load({
     /**
      * 点一条想法的路由（**纯逻辑**，verify 直接驱动；不碰 React/DOM）。
      * @param id - 想法 id
-     * @param mode - 'stay' | 'jump'
-     * @param deps - 宿主能力：{ sessionId, openTabIn, tabsIn, selectPanel, openTab }
-     * @returns { ok, mode, fellBack?, why? }
+     * @param mode - 'inline' | 'jump'
+     * @param deps - 宿主能力（**只有 jump 会用到**）：{ selectPanel, openTab }
+     * @returns { ok, mode, why? }
      *
-     * stay 能不能走要看两件事：① 宿主版本有没有内部通道（openTabIn —— 老宿主没有）；
-     * ② 这个会话的侧栏 store 是否**已被挂载进控制器**。②用 `tabsIn()` 探：它在会话未挂载时返回空表，
-     * 而挂载过的会话至少停着一个常驻导引页签 ⇒ 空表＝还没就绪。探不到就**退回 jump**（点了必须有用），
-     * 并带 fellBack 标记让界面给一行说明——不静默换走法。
+     * inline 一个宿主方法都不调（留在总览＝完全不碰宿主导航）；
+     * jump 的顺序写死：先 selectPanel(null) 再 openTab —— 反了的话公开 openTab 会抛
+     * `sidebarRight: no session surface is mounted`（2026-10-08 实测过）。
      */
     function ovRouteIdea(id, mode, deps) {
       const d = deps ?? {};
-      const ideaId = id == null ? '' : String(id);
-      const msg = (e) => String((e && e.message) || e || '未知错误');
-      if (mode !== 'jump') {
-        let ready = typeof d.openTabIn === 'function' && Boolean(d.sessionId);
-        if (ready && typeof d.tabsIn === 'function') {
-          try {
-            ready = d.tabsIn(d.sessionId).length > 0;
-          } catch {
-            ready = false;
-          }
-        }
-        if (ready) {
-          try {
-            d.openTabIn(d.sessionId, TAB_KIND);
-            return { ok: true, mode: 'stay' };
-          } catch (e) {
-            return ovRouteIdea(ideaId, 'jump', { ...d, fellBack: msg(e) });
-          }
-        }
-        return ovRouteIdea(ideaId, 'jump', { ...d, fellBack: d.fellBack ?? 'stay 通道不可用' });
-      }
+      if (mode !== 'jump') return { ok: true, mode: 'inline' };
       let why = '';
       try {
         d.selectPanel?.(null);
       } catch (e) {
-        why = msg(e);
+        why = String((e && e.message) || e || '未知错误');
       }
       if (!why) {
         try {
           d.openTab?.(TAB_KIND);
         } catch (e) {
-          why = msg(e);
+          why = String((e && e.message) || e || '未知错误');
         }
       }
       if (why) return { ok: false, mode: 'jump', why };
-      const out = { ok: true, mode: 'jump' };
-      if (d.fellBack) out.fellBack = String(d.fellBack);
-      return out;
+      return { ok: true, mode: 'jump' };
     }
 
     const CAL = {
@@ -2583,7 +2583,89 @@ window.__ModuleLoader__.load({
       activity: { display: 'flex', flexDirection: 'column', maxHeight: 220, overflowY: 'auto' },
       actRow: { display: 'flex', gap: 8, alignItems: 'baseline', padding: '1px 0', minWidth: 0 },
       actWhen: { flex: 'none', width: 62, fontSize: 11, opacity: 0.55, textAlign: 'right' },
+      /* 抽屉开着时的两栏：主列可缩（minWidth 0），抽屉定宽、窄了整行换到下面 */
+      bodyRow: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: '10px 12px 14px', display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 10 },
+      mainCol: { flex: '1 1 320px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 },
+      drawer: {
+        flex: '1 1 300px',
+        minWidth: 0,
+        maxWidth: 460,
+        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
+        borderRadius: 8,
+        padding: '8px 10px 10px',
+        background: 'var(--dsw-alias-bg-layer-1, transparent)',
+      },
+      drawerHead: { display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 },
+      drawerTitle: { flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      drawerMeta: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, fontSize: 11.5 },
+      drawerH: { fontSize: 11.5, fontWeight: 600, opacity: 0.82, marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center' },
+      drawerP: { fontSize: 12, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' },
     };
+
+    /**
+     * 总览里的详情抽屉（stay 走法）。
+     *
+     * 为什么详情不画在右栏：宿主右栏的一切都挂在「会话」上，而会话只在**对话占着主列**时存在
+     * （见 ovRouteIdea 上方的长注释）。所以「留在总览看详情」＝我们自己画 —— 数据走 `idea.get`，
+     * 形状复用 `detailMeta`（与右栏看板详情同一份），文案/徽章复用同一批原子（statusChip/taskStatusChip）。
+     * 想要完整面板（差异/对话/验收按钮）时，抽屉底部的「打开完整面板」走 jump。
+     */
+    function OvDetailDrawer({ t, state, onClose, onOpenFull }) {
+      const s = state ?? {};
+      const meta = s.meta ?? null;
+      const tags = Array.isArray(meta?.tags) ? meta.tags : [];
+      const tasks = Array.isArray(meta?.tasks) ? meta.tasks : [];
+      /* 正文全文显示（4000 字是极端保护，真超了明写截断；与 IdeaDetailCard 同口径） */
+      const full = String(meta?.description || t('ov.noBody'));
+      const body = full.length > 4000 ? `${full.slice(0, 4000)}…（已截断，完整内容见完整面板）` : full;
+      return jsx.jsxs('div', { style: OV.drawer, 'data-ov-detail': String(s.id ?? '') || '1', children: [
+        jsx.jsxs('div', { style: OV.drawerHead, children: [
+          jsx.jsx('span', { style: OV.drawerTitle, children: meta?.title ? String(meta.title) : t('ov.drawerTitle') }, 'title'),
+          jsx.jsx('a', { style: OV.link, onClick: onClose, title: t('ov.close'), 'data-ov-close': '1', children: '✕' }, 'close'),
+        ] }, 'head'),
+        s.loading ? jsx.jsx('div', { style: OV.empty, children: t('ov.detailLoading') }, 'loading') : null,
+        s.error
+          ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.detailFailed', { msg: s.error }) }, 'err')
+          : null,
+        meta
+          ? jsx.jsxs('div', { children: [
+              jsx.jsxs('div', { style: { ...OV.drawerMeta, marginBottom: 6 }, children: [
+                statusChip(meta.status, t),
+                meta.priority ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(meta.priority) }, 'p') : null,
+                meta.repo ? jsx.jsx('span', { style: { opacity: 0.7 }, children: String(meta.repo) }, 'repo') : null,
+              ] }, 'chips'),
+              tags.length
+                ? jsx.jsxs('div', { style: { ...OV.drawerMeta, marginBottom: 6 }, children: [
+                    jsx.jsx('span', { style: { opacity: 0.6 }, children: t('ov.tags') }, 'h'),
+                    tags.map((tag) => jsx.jsx('span', { style: T.chip(null), children: String(tag) }, String(tag))),
+                  ] }, 'tags')
+                : null,
+              jsx.jsx('div', { style: OV.drawerP, children: body }, 'body'),
+              meta.spec
+                ? jsx.jsxs('div', { style: { marginTop: 8 }, children: [
+                    jsx.jsx('div', { style: OV.drawerH, children: t('ov.spec') }, 'h'),
+                    jsx.jsx('div', { style: OV.drawerP, children: String(meta.spec).slice(0, 1600) }, 'spec'),
+                  ] }, 'spec')
+                : null,
+              tasks.length
+                ? jsx.jsxs('div', { style: { marginTop: 8 }, children: [
+                    jsx.jsxs('div', { style: OV.drawerH, children: [t('ov.tasks'), jsx.jsx('span', { style: { opacity: 0.6 }, children: String(tasks.length) }, 'n')] }, 'h'),
+                    tasks.slice(0, 8).map((x) =>
+                      jsx.jsxs('div', { style: { display: 'flex', alignItems: 'baseline', gap: 6, padding: '1px 0', minWidth: 0 }, children: [
+                        taskStatusChip(x.status, t),
+                        jsx.jsx('span', { style: OV.rowTitle, children: String(x.id) }, 'id'),
+                        x.turns ? jsx.jsx('span', { style: OV.rowMeta, children: `${x.turns} 轮` }, 'turns') : null,
+                      ] }, String(x.id)),
+                    ),
+                  ] }, 'tasks')
+                : null,
+            ] }, 'content')
+          : null,
+        meta
+          ? jsx.jsx('a', { style: { ...OV.link, display: 'inline-block', marginTop: 8 }, 'data-ov-full': '1', onClick: onOpenFull, children: t('ov.openFull') }, 'full')
+          : null,
+      ] });
+    }
 
     /**
      * 总览面板（左栏「总览」点开的中心区）。
@@ -2596,8 +2678,8 @@ window.__ModuleLoader__.load({
       const [err, setErr] = react.useState(null);
       /** 「点想法去右栏」失败时的可见提示（以前吞掉错误 ⇒ 用户看到的是「点了没反应」） */
       const [openErr, setOpenErr] = react.useState(null);
-      /** 走法被兜底改变时的说明（例如这个会话的侧栏还没就绪 ⇒ 已改从对话打开） */
-      const [openNote, setOpenNote] = react.useState(null);
+      /** 留在总览时，详情开在这里：null = 没开；否则 { loading, id, meta?, error? } */
+      const [drawer, setDrawer] = react.useState(null);
       const [, tick] = react.useState(0);
       const loadRef = react.useRef(null);
       const base = cfg.base;
@@ -2676,55 +2758,59 @@ window.__ModuleLoader__.load({
         }
       };
 
-      /** 宿主右栏控制器（公开面 + 内部通道都挂在这一个实例上） */
-      const getSidebarRight = () => {
-        try {
-          return dshCtx?.get?.('sidebarRight') ?? dshCtx?.sidebarRight ?? null;
-        } catch {
-          return null;
-        }
-      };
+      /** 取一条想法的详情摊进抽屉（走 `idea.get`，与右栏看板详情同一份数据形状 detailMeta） */
+      const openOvDetail = react.useCallback(
+        async (id) => {
+          const ideaId = String(id ?? '');
+          if (!ideaId) return;
+          setDrawer({ loading: true, id: ideaId });
+          try {
+            const d = await postAction(base, 'idea.get', ideaId);
+            setDrawer({ loading: false, id: ideaId, meta: detailMeta(d) });
+          } catch (e) {
+            setDrawer({ loading: false, id: ideaId, error: String((e && e.message) || e) });
+          }
+        },
+        [base],
+      );
 
-      /** 当前会话 id（宿主 uiSession 的适配器；拿不到返回 null） */
-      const currentSessionId = () => {
-        try {
-          return dshCtx?.get?.('uiSession')?.adapter?.current?.getSnapshot?.()?.key ?? null;
-        } catch {
-          return null;
-        }
-      };
-
-      /**
-       * 点一条想法。走法见 ovRouteIdea（可配置 + Ctrl/⌘ 反向）：
-       *   stay ＝ 留在总览，经内部通道 openTabIn 悄悄开右栏页签（开页签自带展开列 + 聚焦）；
-       *   jump ＝ 先把主列还给对话再走公开 openTab。
-       *
-       * ⚠️ jump 的顺序不能反：右栏页签挂在「会话」作用域上，而宿主的「在屏会话」只在**对话占着主列**时
-       * 才存在 —— sidebar-right 源码那句就是
-       * `show(layout.panelInfo.activePanelId === null ? selected.sessionId : undefined)`；
-       * 总览占着主列时公开 openTab 会抛 `sidebarRight: no session surface is mounted`
-       * （2026-10-08 真机实测「点了没反应」，根因就在这里：老代码把异常吞了）。
-       */
-      const openIdeaInSidebar = (id, ev) => {
-        const ctrl = getSidebarRight();
-        const base = ovClickMode();
-        const mod = Boolean(ev && (ev.ctrlKey || ev.metaKey));
-        const want = mod ? (base === 'stay' ? 'jump' : 'stay') : base;
-        const r = ovRouteIdea(id, want, {
-          sessionId: currentSessionId(),
-          openTabIn: typeof ctrl?.openTabIn === 'function' ? (sid, kind) => ctrl.openTabIn(sid, kind) : null,
-          tabsIn: typeof ctrl?.tabsIn === 'function' ? (sid) => ctrl.tabsIn(sid) : null,
+      /** 「去右栏看详情」：jump 走法（先回对话再开页签）；抽屉里的「打开完整面板」也走它 */
+      const openInFullPanel = (id) => {
+        const r = ovRouteIdea(id, 'jump', {
           selectPanel: (v) => getLayout()?.selectPanel?.(v),
           openTab: (kind) => dshCtx?.sidebarRight?.openTab?.(kind),
         });
         if (!r.ok) {
-          setOpenNote(null);
           setOpenErr(r.why); // 不静默：面板上给一行红字说明怎么手动打开
           return;
         }
         setOpenErr(null);
-        setOpenNote(r.fellBack ? t('ov.openFellBack') : null);
         if (String(id ?? '')) focusTabIdea(String(id)); // 页签那边摊开这条想法（模块级小总线）
+      };
+
+      /**
+       * 点一条想法。走法见 ovRouteIdea（可配置 + Ctrl/⌘ 反向）：
+       *   inline ＝ 留在总览：详情开在下面这个抽屉里（不碰宿主导航）；
+       *   jump   ＝ 回对话 + 右栏页签摊开详情（公开路，顺序不能反，见 ovRouteIdea 注释）。
+       */
+      const openIdeaInSidebar = (id, ev) => {
+        const baseMode = ovClickMode();
+        const mod = Boolean(ev && (ev.ctrlKey || ev.metaKey));
+        const want = mod ? (baseMode === 'inline' ? 'jump' : 'inline') : baseMode;
+        const r = ovRouteIdea(id, want, {
+          selectPanel: (v) => getLayout()?.selectPanel?.(v),
+          openTab: (kind) => dshCtx?.sidebarRight?.openTab?.(kind),
+        });
+        if (!r.ok) {
+          setOpenErr(r.why); // 不静默：面板上给一行红字说明怎么手动打开
+          return;
+        }
+        setOpenErr(null);
+        if (r.mode === 'inline') {
+          openOvDetail(id); // 留在总览：抽屉里取详情
+          return;
+        }
+        if (String(id ?? '')) focusTabIdea(String(id)); // 回对话：页签那边摊开这条想法
       };
 
       /** 「回到对话」：清掉中心面板的选择（layout 的 selectPanel(null) 就是内置回到会话那条路） */
@@ -2806,11 +2892,11 @@ window.__ModuleLoader__.load({
         ] }, key);
 
       /** 行提示：写明「点一下会怎样、Ctrl/⌘ 点会怎样」——别让用户猜 */
-      const clickHint = () => t(ovClickMode() === 'stay' ? 'ov.clickHintStay' : 'ov.clickHintJump');
+      const clickHint = () => t(ovClickMode() === 'inline' ? 'ov.clickHintStay' : 'ov.clickHintJump');
 
       const listRow = (idea, meta) =>
         jsx.jsxs('div', {
-          style: OV.row(false),
+          style: OV.row(Boolean(drawer && drawer.id === idea.id)),
           onClick: (ev) => openIdeaInSidebar(idea.id, ev),
           title: idea.title ? `${idea.title} · ${clickHint()}` : clickHint(),
           children: [
@@ -2832,10 +2918,11 @@ window.__ModuleLoader__.load({
 
       return jsx.jsxs('div', { style: OV.wrap, 'data-ov': PANEL_ID, children: [
         head,
-        jsx.jsxs('div', { style: OV.body, 'data-ov-state': err ? 'error' : 'ready', children: [
+        jsx.jsxs('div', { style: drawer ? OV.bodyRow : OV.body, 'data-ov-state': err ? 'error' : 'ready', children: [
+          /* 抽屉开着时，原来的整页内容收进左列（flex 1），抽屉在右列；窄了自动换行到下面 */
+          jsx.jsxs('div', { style: OV.mainCol, 'data-ov-main': '1', children: [
           err ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.loadFailed', { msg: err }) }, 'err') : null,
           openErr ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.openFailed', { msg: openErr }) }, 'openerr') : null,
-          openNote ? jsx.jsx('div', { style: { fontSize: 11.5, opacity: 0.7 }, children: openNote }, 'opennote') : null,
 
           jsx.jsxs('div', { style: OV.grid, children: [
             statCard('ideas', t('ov.stat.ideas'), ov.totalIdeas ?? 0, t('ov.foot.inbox', { n: counts.inbox ?? 0 })),
@@ -2916,6 +3003,15 @@ window.__ModuleLoader__.load({
 
           blockedIdeas.length
             ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-warn, #ffce7a)' }, children: t('ov.blockedNote', { n: blockedIdeas.length }) }, 'blockednote')
+            : null,
+          ] }, 'maincol'),
+          drawer
+            ? jsx.jsx(OvDetailDrawer, {
+                t,
+                state: drawer,
+                onClose: () => setDrawer(null),
+                onOpenFull: () => openInFullPanel(drawer.id),
+              }, 'drawer')
             : null,
         ] }, 'body'),
       ] });
@@ -3822,7 +3918,7 @@ window.__ModuleLoader__.load({
         }, v);
       return jsx.jsxs('div', { style: { marginTop: 10, fontSize: 12.5 }, children: [
         jsx.jsx('span', { style: { opacity: 0.7, marginRight: 8 }, children: tr('ov.clickPref') }, 'label'),
-        opt('stay', 'ov.clickPrefStay'),
+        opt('inline', 'ov.clickPrefStay'),
         opt('jump', 'ov.clickPrefJump'),
         jsx.jsx('div', { style: { opacity: 0.6, fontSize: 11.5, marginTop: 3 }, children: tr('ov.clickPrefHint') }, 'hint'),
       ] }, 'clickpref');
@@ -3991,7 +4087,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { BoardTaskRow, IdeaDetailCard, AitmPanel, AitmTabTitle, AitmSection, AitmClickPref, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard, AitmOverview };
+    exports.__components = { BoardTaskRow, IdeaDetailCard, OvDetailDrawer, AitmPanel, AitmTabTitle, AitmSection, AitmClickPref, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard, AitmOverview };
     /** 合集的口径副本（纯函数；verify-dsh 拿内核 src/shared/feed-format.ts 逐字比） */
     exports.__feedHelpers = { FEED_KIND_LABEL, FEED_BLOCKS, compactNumber, metricText, trendText, feedPrefill, markFeedRecorded };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */

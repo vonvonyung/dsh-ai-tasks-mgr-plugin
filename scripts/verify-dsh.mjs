@@ -450,65 +450,46 @@ async function checkRender() {
     );
   }
   {
-    /* 2026-10-08 用户要求：点想法默认「留在总览、右栏静静开详情」；Ctrl/⌘ 反着来。
-       这条也顺带守住 stay 模式的实现依据：宿主开页签的动作自带
-       `planSetExpanded(state, true)`（sidebar-right 源码）⇒ 右栏列会自己展开。 */
+    /* 2026-10-08 用户要求「留在总览」；查证后：右栏**架构上**画不出来（主列不绑会话 ⇒
+       uiSession.current 为空 ⇒ 右栏会话视图全 hidden），所以 stay 改成「详情开在总览自己身上」。
+       这里的断言守三件事：inline 一个宿主方法都不碰 / jump 的顺序与失败不静默 / 抽屉真的渲染。 */
     const R = OVH.ovRouteIdea;
-    const calls = [];
-    const deps = (over) => ({
-      sessionId: 'sess-1',
-      openTabIn: (sid, kind) => calls.push(`in:${sid}:${kind}`),
-      tabsIn: () => [{ id: 'g', kind: 'guide' }], // 已挂载的会话至少停着常驻导引页签
-      selectPanel: (v) => calls.push(`panel:${v}`),
-      openTab: (kind) => calls.push(`open:${kind}`),
-      ...over,
-    });
-    const rStay = R('i1', 'stay', deps());
-    const countPanel = () => calls.filter((c) => c.startsWith('panel:')).length;
+    const hostCalls = [];
+    const spyDeps = { selectPanel: (x) => hostCalls.push(`panel:${x}`), openTab: (k) => hostCalls.push(`open:${k}`) };
+    const rInline = R('i1', 'inline', spyDeps);
     check(
-      'stay：留在总览 —— 只走内部通道 openTabIn(当前会话)，**不碰**主列（不调 selectPanel）',
-      rStay.ok === true && rStay.mode === 'stay' && calls.includes('in:sess-1:aitm') && countPanel() === 0,
-      calls.join(' / ') || '(没有调用)',
+      'inline：留在总览 —— **一个宿主方法都不调**（不碰 selectPanel / openTab）',
+      rInline.ok === true && rInline.mode === 'inline' && hostCalls.length === 0,
+      hostCalls.join(' / ') || '(没有调用)',
     );
-    const c2 = [];
-    const rOld = R('i1', 'stay', { sessionId: 'sess-1', openTab: (k) => c2.push(`open:${k}`), selectPanel: (v) => c2.push(`panel:${v}`) });
+    const cOrder = [];
+    const rOrder = R('i1', 'jump', { selectPanel: () => cOrder.push('panel'), openTab: () => cOrder.push('open') });
     check(
-      'stay 兜底：老宿主没有内部通道 ⇒ 自动改走 jump（回对话 + 公开 openTab），并带 fellBack 说明',
-      rOld.ok === true && rOld.mode === 'jump' && Boolean(rOld.fellBack) && c2.includes('panel:null') && c2.includes('open:aitm'),
-      c2.join(' / '),
-    );
-    const c3 = [];
-    const rCold = R('i1', 'stay', deps({ tabsIn: () => [], selectPanel: (v) => c3.push(`panel:${v}`), openTab: (k) => c3.push(`open:${k}`) }));
-    check(
-      'stay 兜底：这个会话的侧栏 store 还没挂载（tabsIn 空表）⇒ 改走 jump，别赌（点了必须有用）',
-      rCold.ok === true && rCold.mode === 'jump' && Boolean(rCold.fellBack) && c3.includes('open:aitm'),
-      c3.join(' / '),
+      'jump：先把主列还给对话，再开右栏页签（顺序反了 ⇒ 公开 openTab 抛 no session surface —— 实测过）',
+      rOrder.ok === true && JSON.stringify(cOrder) === JSON.stringify(['panel', 'open']),
+      cOrder.join(' → '),
     );
     const rBad = R('i1', 'jump', { selectPanel: () => {}, openTab: () => { throw new Error('no session surface is mounted'); } });
     check('jump 失败不再静默：带 ok=false + why（面板上给红字）', rBad.ok === false && /no session surface/.test(String(rBad.why)), String(rBad.why));
-    const c4 = [];
-    const rFail = R('i1', 'stay', deps({ openTabIn: () => { throw new Error('boom'); }, selectPanel: (v) => c4.push(`panel:${v}`), openTab: (k) => c4.push(`open:${k}`) }));
-    check('stay 通道抛错 ⇒ 也兜到 jump（不是点了没反应）', rFail.ok === true && rFail.mode === 'jump' && c4.includes('open:aitm'), c4.join(' / '));
+    check(
+      '组件接线：inline 落进抽屉（openOvDetail），jump 才去传话（focusTabIdea）',
+      /r\.mode === 'inline'[\s\S]{0,120}?openOvDetail\(id\)/.test(ovSeg) && /focusTabIdea\(String\(id\)\)/.test(ovSeg),
+    );
   }
   {
-    /* 行为断言（不靠正则）：用假 localStorage 真跑一遍读写 —— 空存储默认 stay、能存能读、
-       非法值收敛到 stay、存储抛错（隐私模式）也要能回到默认。 */
+    /* 默认值＝行为断言（不靠正则）：用假 localStorage 真跑一遍读写。 */
     const realLS = globalThis.localStorage;
     const mem = new Map();
-    let d1 = '';
-    let d2 = '';
-    let d3 = '';
-    let d4 = '';
-    let d5 = '';
+    const d = [];
     try {
       globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, val) => mem.set(k, val) };
-      d1 = OVH.ovClickMode(); // 空存储 → stay
+      d.push(OVH.ovClickMode()); // 空存储 → inline
       OVH.ovSetClickMode('jump');
-      d2 = OVH.ovClickMode();
-      OVH.ovSetClickMode('stay');
-      d3 = OVH.ovClickMode();
+      d.push(OVH.ovClickMode());
+      OVH.ovSetClickMode('inline');
+      d.push(OVH.ovClickMode());
       OVH.ovSetClickMode('weird');
-      d4 = OVH.ovClickMode(); // 非法值收敛到 stay
+      d.push(OVH.ovClickMode()); // 非法值收敛到 inline
       globalThis.localStorage = {
         getItem: () => {
           throw new Error('denied');
@@ -517,30 +498,30 @@ async function checkRender() {
           throw new Error('denied');
         },
       };
-      d5 = OVH.ovClickMode(); // 存储不可用（隐私模式）→ 默认 stay，不抛
+      d.push(OVH.ovClickMode()); // 存储不可用（隐私模式）→ 默认 inline，不抛
     } catch (e) {
-      d5 = `threw:${String(e?.message ?? e)}`;
+      d.push(`threw:${String(e?.message ?? e)}`);
     } finally {
       if (realLS === undefined) delete globalThis.localStorage;
       else globalThis.localStorage = realLS;
     }
     check(
-      '点法可配置：空存储/非法值/存储不可用都落到默认 stay，读写能往返（真跑一遍）',
-      d1 === 'stay' && d2 === 'jump' && d3 === 'stay' && d4 === 'stay' && d5 === 'stay' && OVH.OV_CLICK_KEY === 'aitm.overview.clickMode',
-      `空=${d1} 存jump=${d2} 存stay=${d3} 非法=${d4} 抛错=${d5}`,
+      '点法可配置：空存储/非法值/存储不可用都落到默认 inline，读写能往返（真跑一遍）',
+      d.join(',') === 'inline,jump,inline,inline,inline' && OVH.OV_CLICK_KEY === 'aitm.overview.clickMode',
+      d.join(' / '),
     );
   }
   check(
     'Ctrl/⌘+点击＝临时反向（静态接线；模式取反那行）',
-    /ev\.ctrlKey \|\| ev\.metaKey/.test(ovSrc) && /base === 'stay' \? 'jump' : 'stay'/.test(ovSrc),
+    /ev\.ctrlKey \|\| ev\.metaKey/.test(ovSrc) && /baseMode === 'inline' \? 'jump' : 'inline'/.test(ovSrc),
   );
   {
     const CP = loaded.exports.__components.AitmClickPref;
     const html = CP ? renderToStaticMarkup(React.createElement(CP, {})) : '';
     check(
-      '设置节有「总览里点想法」两项（stay/jump）+ 修饰键说明，选中的那个被标出来',
+      '设置节有「总览里点想法」两项（inline/jump）+ 修饰键说明，选中的那个被标出来',
       Boolean(CP) &&
-        html.includes('data-click-pref="stay"') &&
+        html.includes('data-click-pref="inline"') &&
         html.includes('data-click-pref="jump"') &&
         /●\s*留在总览/.test(html) &&
         html.includes('Ctrl/⌘') &&
@@ -548,14 +529,62 @@ async function checkRender() {
         Boolean(locales.aitm?.en?.['ov.clickPref']),
       `${html.length} 字节`,
     );
-    check(
-      '新走法的文案 zh/en 都在（兜底说明 + 两种行提示）',
-      ['ov.openFellBack', 'ov.clickHintStay', 'ov.clickHintJump', 'ov.clickPrefStay', 'ov.clickPrefJump', 'ov.clickPrefHint'].every(
-        (k) => locales.aitm?.zh?.[k] && locales.aitm?.en?.[k],
-      ),
-    );
-    check('行提示按当前走法给（不是写死一句）', /clickHint\(\)/.test(ovSeg) && /ovClickMode\(\) === 'stay' \? 'ov\.clickHintStay' : 'ov\.clickHintJump'/.test(ovSeg));
   }
+  {
+    /* 抽屉：真渲染三种状态（有数据 / 取中 / 失败）——文案、字段、按钮、关闭都得在。 */
+    const D = loaded.exports.__components.OvDetailDrawer;
+    const fakeT = (k, vars) => String(locales.aitm?.zh?.[k] ?? k).replace(/\{(\w+)\}/g, (m, n) => (vars && n in vars ? String(vars[n]) : m));
+    const renderDrawer = (state) => (D ? renderToStaticMarkup(React.createElement(D, { t: fakeT, state, onClose: () => {}, onOpenFull: () => {} })) : '');
+    const withMeta = renderDrawer({
+      loading: false,
+      id: 'i_drawer',
+      meta: {
+        id: 'i_drawer',
+        title: '抽屉里的想法',
+        status: 'review',
+        tags: ['素材', '测试'],
+        priority: 'P1',
+        description: '正文第一行\n第二行',
+        spec: '规格内容',
+        tasks: [{ id: 't1', status: 'succeeded', turns: 2 }],
+      },
+    });
+    check(
+      '抽屉（有数据）：标题 + 状态徽章 + 正文 + 标签 + 规格 + 任务 + 「打开完整面板」+ 关闭钮',
+      Boolean(D) &&
+        withMeta.includes('抽屉里的想法') &&
+        withMeta.includes('data-ov-detail="i_drawer"') &&
+        /task-ok|待验收/.test(withMeta) &&
+        withMeta.includes('正文第一行') &&
+        withMeta.includes('标签') &&
+        withMeta.includes('规格内容') &&
+        withMeta.includes('任务') &&
+        withMeta.includes('打开完整面板') &&
+        withMeta.includes('data-ov-close="1"'),
+      `${withMeta.length} 字节`,
+    );
+    const loadingHtml = renderDrawer({ loading: true, id: 'i_x' });
+    const errHtml = renderDrawer({ loading: false, id: 'i_x', error: 'HTTP 500' });
+    check(
+      '抽屉（取中/失败）：取中给人话、失败给红字（不静默）',
+      loadingHtml.includes('正在取详情') && errHtml.includes('取详情失败') && errHtml.includes('HTTP 500'),
+      `${loadingHtml.length} / ${errHtml.length} 字节`,
+    );
+    check(
+      '抽屉接在总览 body 里（开抽屉时原内容收进主列，窄了自动换行）',
+      /style: drawer \? OV\.bodyRow : OV\.body/.test(ovSeg) && /'data-ov-main': '1'/.test(ovSeg) && /jsx\.jsx\(OvDetailDrawer, \{/.test(ovSeg),
+    );
+  }
+  check(
+    '新走法的文案 zh/en 都在（两种行提示 + 设置两项 + 抽屉用词）',
+    ['ov.clickHintStay', 'ov.clickHintJump', 'ov.clickPrefStay', 'ov.clickPrefJump', 'ov.openFull', 'ov.close', 'ov.detailLoading', 'ov.detailFailed', 'ov.tags', 'ov.tasks', 'ov.noBody', 'ov.spec', 'ov.drawerTitle'].every(
+      (k) => locales.aitm?.zh?.[k] && locales.aitm?.en?.[k],
+    ),
+  );
+  check(
+    '行提示按当前走法给（不是写死一句）',
+    /clickHint\(\)/.test(ovSeg) && /ovClickMode\(\) === 'inline' \? 'ov\.clickHintStay' : 'ov\.clickHintJump'/.test(ovSeg),
+  );
   {
     const BUS = OVH;
     const got = [];
