@@ -420,30 +420,141 @@ async function checkRender() {
     /* 2026-10-08 真机实测：点想法没反应。根因＝右栏页签只在**对话占着主列**时才有「在屏会话」
        （sidebar-right 源码：`show(layout.panelInfo.activePanelId === null ? selected.sessionId : undefined)`；
        总览占着主列时 openTab 抛 `no session surface is mounted`）。修法＝先回对话再开页签 —— 顺序别反。 */
-    const iBack = ovSeg.indexOf('selectPanel?.(null)');
-    const iOpen = ovSeg.indexOf('openTab?.(TAB_KIND)');
+    const cOrder = [];
+    const rOrder = OVH.ovRouteIdea('i1', 'jump', {
+      sessionId: 'sess-1',
+      selectPanel: () => cOrder.push('panel'),
+      openTab: () => cOrder.push('open'),
+    });
     check(
-      '点想法：先把主列还给对话，再开右栏页签（顺序反了 ⇒ openTab 抛 no session surface）',
-      iBack >= 0 && iOpen > iBack,
-      `selectPanel@${iBack} < openTab@${iOpen}`,
+      'jump：先把主列还给对话，再开右栏页签（顺序反了 ⇒ 公开 openTab 抛 no session surface —— 实测过）',
+      rOrder.ok === true && JSON.stringify(cOrder) === JSON.stringify(['panel', 'open']),
+      cOrder.join(' → '),
     );
     check(
       '点想法：不再向宿主 tab 传 params（我们的页签类型没声明 params 形状，宿主会静默丢掉）',
-      !/openTab\?\.\(TAB_KIND,\s*\{/.test(ovSeg) && /focusTabIdea\(ideaId\)/.test(ovSeg),
+      !/openTab\?\.\(TAB_KIND,\s*\{/.test(ovSeg) && /focusTabIdea\(String\(id\)\)/.test(ovSeg),
     );
   }
   {
-    const fnStart = ovSeg.indexOf('const openIdeaInSidebar = (id) => {');
+    const fnStart = ovSeg.indexOf('const openIdeaInSidebar = (id, ev) => {');
     const fnEnd = fnStart >= 0 ? ovSeg.indexOf('\n      };', fnStart) : -1;
     const fnBody = fnStart >= 0 && fnEnd > fnStart ? ovSeg.slice(fnStart, fnEnd) : '';
     check(
       '点想法失败不再静默：错误攒起来 → setOpenErr → 面板上有一行红字（含手动打开的路）',
       fnBody.length > 200 &&
-        /setOpenErr\(why\)/.test(fnBody) &&
+        /setOpenErr\(r\.why\)/.test(fnBody) &&
         /t\('ov\.openFailed',\s*\{\s*msg:\s*openErr\s*\}\)/.test(ovSeg) &&
         Boolean(locales.aitm?.zh?.['ov.openFailed']) &&
         Boolean(locales.aitm?.en?.['ov.openFailed']),
     );
+  }
+  {
+    /* 2026-10-08 用户要求：点想法默认「留在总览、右栏静静开详情」；Ctrl/⌘ 反着来。
+       这条也顺带守住 stay 模式的实现依据：宿主开页签的动作自带
+       `planSetExpanded(state, true)`（sidebar-right 源码）⇒ 右栏列会自己展开。 */
+    const R = OVH.ovRouteIdea;
+    const calls = [];
+    const deps = (over) => ({
+      sessionId: 'sess-1',
+      openTabIn: (sid, kind) => calls.push(`in:${sid}:${kind}`),
+      tabsIn: () => [{ id: 'g', kind: 'guide' }], // 已挂载的会话至少停着常驻导引页签
+      selectPanel: (v) => calls.push(`panel:${v}`),
+      openTab: (kind) => calls.push(`open:${kind}`),
+      ...over,
+    });
+    const rStay = R('i1', 'stay', deps());
+    const countPanel = () => calls.filter((c) => c.startsWith('panel:')).length;
+    check(
+      'stay：留在总览 —— 只走内部通道 openTabIn(当前会话)，**不碰**主列（不调 selectPanel）',
+      rStay.ok === true && rStay.mode === 'stay' && calls.includes('in:sess-1:aitm') && countPanel() === 0,
+      calls.join(' / ') || '(没有调用)',
+    );
+    const c2 = [];
+    const rOld = R('i1', 'stay', { sessionId: 'sess-1', openTab: (k) => c2.push(`open:${k}`), selectPanel: (v) => c2.push(`panel:${v}`) });
+    check(
+      'stay 兜底：老宿主没有内部通道 ⇒ 自动改走 jump（回对话 + 公开 openTab），并带 fellBack 说明',
+      rOld.ok === true && rOld.mode === 'jump' && Boolean(rOld.fellBack) && c2.includes('panel:null') && c2.includes('open:aitm'),
+      c2.join(' / '),
+    );
+    const c3 = [];
+    const rCold = R('i1', 'stay', deps({ tabsIn: () => [], selectPanel: (v) => c3.push(`panel:${v}`), openTab: (k) => c3.push(`open:${k}`) }));
+    check(
+      'stay 兜底：这个会话的侧栏 store 还没挂载（tabsIn 空表）⇒ 改走 jump，别赌（点了必须有用）',
+      rCold.ok === true && rCold.mode === 'jump' && Boolean(rCold.fellBack) && c3.includes('open:aitm'),
+      c3.join(' / '),
+    );
+    const rBad = R('i1', 'jump', { selectPanel: () => {}, openTab: () => { throw new Error('no session surface is mounted'); } });
+    check('jump 失败不再静默：带 ok=false + why（面板上给红字）', rBad.ok === false && /no session surface/.test(String(rBad.why)), String(rBad.why));
+    const c4 = [];
+    const rFail = R('i1', 'stay', deps({ openTabIn: () => { throw new Error('boom'); }, selectPanel: (v) => c4.push(`panel:${v}`), openTab: (k) => c4.push(`open:${k}`) }));
+    check('stay 通道抛错 ⇒ 也兜到 jump（不是点了没反应）', rFail.ok === true && rFail.mode === 'jump' && c4.includes('open:aitm'), c4.join(' / '));
+  }
+  {
+    /* 行为断言（不靠正则）：用假 localStorage 真跑一遍读写 —— 空存储默认 stay、能存能读、
+       非法值收敛到 stay、存储抛错（隐私模式）也要能回到默认。 */
+    const realLS = globalThis.localStorage;
+    const mem = new Map();
+    let d1 = '';
+    let d2 = '';
+    let d3 = '';
+    let d4 = '';
+    let d5 = '';
+    try {
+      globalThis.localStorage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, val) => mem.set(k, val) };
+      d1 = OVH.ovClickMode(); // 空存储 → stay
+      OVH.ovSetClickMode('jump');
+      d2 = OVH.ovClickMode();
+      OVH.ovSetClickMode('stay');
+      d3 = OVH.ovClickMode();
+      OVH.ovSetClickMode('weird');
+      d4 = OVH.ovClickMode(); // 非法值收敛到 stay
+      globalThis.localStorage = {
+        getItem: () => {
+          throw new Error('denied');
+        },
+        setItem: () => {
+          throw new Error('denied');
+        },
+      };
+      d5 = OVH.ovClickMode(); // 存储不可用（隐私模式）→ 默认 stay，不抛
+    } catch (e) {
+      d5 = `threw:${String(e?.message ?? e)}`;
+    } finally {
+      if (realLS === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = realLS;
+    }
+    check(
+      '点法可配置：空存储/非法值/存储不可用都落到默认 stay，读写能往返（真跑一遍）',
+      d1 === 'stay' && d2 === 'jump' && d3 === 'stay' && d4 === 'stay' && d5 === 'stay' && OVH.OV_CLICK_KEY === 'aitm.overview.clickMode',
+      `空=${d1} 存jump=${d2} 存stay=${d3} 非法=${d4} 抛错=${d5}`,
+    );
+  }
+  check(
+    'Ctrl/⌘+点击＝临时反向（静态接线；模式取反那行）',
+    /ev\.ctrlKey \|\| ev\.metaKey/.test(ovSrc) && /base === 'stay' \? 'jump' : 'stay'/.test(ovSrc),
+  );
+  {
+    const CP = loaded.exports.__components.AitmClickPref;
+    const html = CP ? renderToStaticMarkup(React.createElement(CP, {})) : '';
+    check(
+      '设置节有「总览里点想法」两项（stay/jump）+ 修饰键说明，选中的那个被标出来',
+      Boolean(CP) &&
+        html.includes('data-click-pref="stay"') &&
+        html.includes('data-click-pref="jump"') &&
+        /●\s*留在总览/.test(html) &&
+        html.includes('Ctrl/⌘') &&
+        Boolean(locales.aitm?.zh?.['ov.clickPref']) &&
+        Boolean(locales.aitm?.en?.['ov.clickPref']),
+      `${html.length} 字节`,
+    );
+    check(
+      '新走法的文案 zh/en 都在（兜底说明 + 两种行提示）',
+      ['ov.openFellBack', 'ov.clickHintStay', 'ov.clickHintJump', 'ov.clickPrefStay', 'ov.clickPrefJump', 'ov.clickPrefHint'].every(
+        (k) => locales.aitm?.zh?.[k] && locales.aitm?.en?.[k],
+      ),
+    );
+    check('行提示按当前走法给（不是写死一句）', /clickHint\(\)/.test(ovSeg) && /ovClickMode\(\) === 'stay' \? 'ov\.clickHintStay' : 'ov\.clickHintJump'/.test(ovSeg));
   }
   {
     const BUS = OVH;

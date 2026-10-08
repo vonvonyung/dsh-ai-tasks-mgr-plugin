@@ -354,6 +354,13 @@ window.__ModuleLoader__.load({
       'ov.updated': '更新于 {t}',
       'ov.backChat': '回到对话',
       'ov.openFailed': '没能打开右侧栏「AI 任务台」：{msg}（可从右侧栏的「+」手动打开）',
+      'ov.openFellBack': '这个会话的右侧栏还没就绪，已改从对话打开（下次点就正常了）',
+      'ov.clickHintStay': '点＝留在总览、右栏打开详情；Ctrl/⌘+点＝回对话打开',
+      'ov.clickHintJump': '点＝回对话打开；Ctrl/⌘+点＝留在总览、右栏开详情',
+      'ov.clickPref': '总览里点想法',
+      'ov.clickPrefStay': '留在总览（右栏开详情）',
+      'ov.clickPrefJump': '回对话打开',
+      'ov.clickPrefHint': 'Ctrl/⌘+点击临时用另一种方式；设置存在本机浏览器里',
     };
     const en = {
       'card.openPanel': 'Open in panel',
@@ -571,6 +578,13 @@ window.__ModuleLoader__.load({
       'ov.updated': 'Updated {t}',
       'ov.backChat': 'Back to chat',
       'ov.openFailed': 'Could not open the AI Tasks tab in the right sidebar: {msg} (open it from the sidebar’s “+” menu)',
+      'ov.openFellBack': 'This session’s sidebar is not ready yet, opened from the conversation instead (next click should be fine)',
+      'ov.clickHintStay': 'Click: stay in Overview, open the detail in the right sidebar; Ctrl/⌘+click: open from the conversation',
+      'ov.clickHintJump': 'Click: open from the conversation; Ctrl/⌘+click: stay in Overview, open in the right sidebar',
+      'ov.clickPref': 'Clicking an idea in Overview',
+      'ov.clickPrefStay': 'Stay in Overview (detail in the right sidebar)',
+      'ov.clickPrefJump': 'Open from the conversation',
+      'ov.clickPrefHint': 'Ctrl/⌘+click temporarily uses the other way; the setting lives in this browser',
     };
 
     /**
@@ -1911,6 +1925,89 @@ window.__ModuleLoader__.load({
       return v;
     }
 
+    /* ─────────── 总览里「点一条想法」往哪走（可配置） ───────────
+
+       两种走法：
+         stay = 留在总览：走右栏控制器的内部通道 openTabIn(sessionId, kind) 悄悄开页签
+                （不开这个通道的话，公开的 openTab 只在「对话占着主列」时可用 —— 见 openIdeaInSidebar 注释）；
+                宿主开页签的动作自带 `planSetExpanded(state, true)` ⇒ 右栏列会自己展开、页签被聚焦。
+         jump = 回对话再开（公开 API；一定会成功，但会离开总览）。
+
+       可配置：`aitm.overview.clickMode`（localStorage，'stay' 默认 / 'jump'）＝点一下的走法；
+       **Ctrl/⌘+点击总是走另一种**（临时反向，不用去改设置）。设置节里有对应的两项。
+       注意：localStorage 在隐私模式/离线渲染里会抛 ⇒ 全程 try/catch，读不到就按默认 stay。 */
+    const OV_CLICK_KEY = 'aitm.overview.clickMode';
+
+    function ovClickMode() {
+      try {
+        return globalThis.localStorage?.getItem?.(OV_CLICK_KEY) === 'jump' ? 'jump' : 'stay';
+      } catch {
+        return 'stay';
+      }
+    }
+
+    function ovSetClickMode(v) {
+      try {
+        globalThis.localStorage?.setItem?.(OV_CLICK_KEY, v === 'jump' ? 'jump' : 'stay');
+      } catch {
+        /* 存不下就算了：本次会话仍按默认走 */
+      }
+    }
+
+    /**
+     * 点一条想法的路由（**纯逻辑**，verify 直接驱动；不碰 React/DOM）。
+     * @param id - 想法 id
+     * @param mode - 'stay' | 'jump'
+     * @param deps - 宿主能力：{ sessionId, openTabIn, tabsIn, selectPanel, openTab }
+     * @returns { ok, mode, fellBack?, why? }
+     *
+     * stay 能不能走要看两件事：① 宿主版本有没有内部通道（openTabIn —— 老宿主没有）；
+     * ② 这个会话的侧栏 store 是否**已被挂载进控制器**。②用 `tabsIn()` 探：它在会话未挂载时返回空表，
+     * 而挂载过的会话至少停着一个常驻导引页签 ⇒ 空表＝还没就绪。探不到就**退回 jump**（点了必须有用），
+     * 并带 fellBack 标记让界面给一行说明——不静默换走法。
+     */
+    function ovRouteIdea(id, mode, deps) {
+      const d = deps ?? {};
+      const ideaId = id == null ? '' : String(id);
+      const msg = (e) => String((e && e.message) || e || '未知错误');
+      if (mode !== 'jump') {
+        let ready = typeof d.openTabIn === 'function' && Boolean(d.sessionId);
+        if (ready && typeof d.tabsIn === 'function') {
+          try {
+            ready = d.tabsIn(d.sessionId).length > 0;
+          } catch {
+            ready = false;
+          }
+        }
+        if (ready) {
+          try {
+            d.openTabIn(d.sessionId, TAB_KIND);
+            return { ok: true, mode: 'stay' };
+          } catch (e) {
+            return ovRouteIdea(ideaId, 'jump', { ...d, fellBack: msg(e) });
+          }
+        }
+        return ovRouteIdea(ideaId, 'jump', { ...d, fellBack: d.fellBack ?? 'stay 通道不可用' });
+      }
+      let why = '';
+      try {
+        d.selectPanel?.(null);
+      } catch (e) {
+        why = msg(e);
+      }
+      if (!why) {
+        try {
+          d.openTab?.(TAB_KIND);
+        } catch (e) {
+          why = msg(e);
+        }
+      }
+      if (why) return { ok: false, mode: 'jump', why };
+      const out = { ok: true, mode: 'jump' };
+      if (d.fellBack) out.fellBack = String(d.fellBack);
+      return out;
+    }
+
     const CAL = {
       /* flex: '1 1 auto' + minHeight: 0 ⇒ 作为面板 flex 子项被压缩时，内部滚动条才生效；
          只写 height: '100%' 的话，面板里还有页签条要占高度，内容会把面板撑破（底部被裁掉）。 */
@@ -2288,6 +2385,22 @@ window.__ModuleLoader__.load({
     /** 宿主 ctx 的落点（apply 时赋值）。组件里只用它做「切页签 / 回对话」两件事，全都 try 包住。 */
     let dshCtx = null;
 
+    /** 宿主语言优先的取词器（bind(NS)）；拿不到就退回 zh 表 —— 设置节这类不在 props.t 里的地方用 */
+    let boundText = null;
+
+    function tr(k, vars) {
+      if (!boundText) {
+        try {
+          boundText = typeof dshCtx?.locale?.bind === 'function' ? dshCtx.locale.bind(NS) : null;
+        } catch {
+          boundText = null;
+        }
+      }
+      const hit = boundText ? boundText(k) : null;
+      const raw = hit && hit !== k ? hit : String(zh[k] ?? en[k] ?? k);
+      return raw.replace(/\{(\w+)\}/g, (m, n) => (vars && n in vars ? String(vars[n]) : m));
+    }
+
     /**
      * 左栏图标：环 + 进度弧（「总览」＝一眼看到进度）。
      * 宿主给的是 `{ size, active }`（`SidebarPanelIconOwnerProps`）：两处都要认 ——
@@ -2483,6 +2596,8 @@ window.__ModuleLoader__.load({
       const [err, setErr] = react.useState(null);
       /** 「点想法去右栏」失败时的可见提示（以前吞掉错误 ⇒ 用户看到的是「点了没反应」） */
       const [openErr, setOpenErr] = react.useState(null);
+      /** 走法被兜底改变时的说明（例如这个会话的侧栏还没就绪 ⇒ 已改从对话打开） */
+      const [openNote, setOpenNote] = react.useState(null);
       const [, tick] = react.useState(0);
       const loadRef = react.useRef(null);
       const base = cfg.base;
@@ -2561,36 +2676,55 @@ window.__ModuleLoader__.load({
         }
       };
 
+      /** 宿主右栏控制器（公开面 + 内部通道都挂在这一个实例上） */
+      const getSidebarRight = () => {
+        try {
+          return dshCtx?.get?.('sidebarRight') ?? dshCtx?.sidebarRight ?? null;
+        } catch {
+          return null;
+        }
+      };
+
+      /** 当前会话 id（宿主 uiSession 的适配器；拿不到返回 null） */
+      const currentSessionId = () => {
+        try {
+          return dshCtx?.get?.('uiSession')?.adapter?.current?.getSnapshot?.()?.key ?? null;
+        } catch {
+          return null;
+        }
+      };
+
       /**
-       * 点想法 → **先回对话** → 打开/聚焦右侧栏「AI 任务台」→ 让页签摊开这条想法。
+       * 点一条想法。走法见 ovRouteIdea（可配置 + Ctrl/⌘ 反向）：
+       *   stay ＝ 留在总览，经内部通道 openTabIn 悄悄开右栏页签（开页签自带展开列 + 聚焦）；
+       *   jump ＝ 先把主列还给对话再走公开 openTab。
        *
-       * ⚠️ 顺序不能反：右栏页签挂在「会话」作用域上，而宿主的「在屏会话」只在**对话占着主列**时
+       * ⚠️ jump 的顺序不能反：右栏页签挂在「会话」作用域上，而宿主的「在屏会话」只在**对话占着主列**时
        * 才存在 —— sidebar-right 源码那句就是
        * `show(layout.panelInfo.activePanelId === null ? selected.sessionId : undefined)`；
-       * 总览占着主列时 openTab 会抛 `sidebarRight: no session surface is mounted`
+       * 总览占着主列时公开 openTab 会抛 `sidebarRight: no session surface is mounted`
        * （2026-10-08 真机实测「点了没反应」，根因就在这里：老代码把异常吞了）。
        */
-      const openIdeaInSidebar = (id) => {
-        const ideaId = id == null ? '' : String(id);
-        let why = '';
-        try {
-          getLayout()?.selectPanel?.(null); // ① 把主列还给对话（右栏才有落脚点）
-        } catch (e) {
-          why = String((e && e.message) || e);
-        }
-        if (!why) {
-          try {
-            dshCtx?.sidebarRight?.openTab?.(TAB_KIND); // ② 开页签（已开就是聚焦）
-          } catch (e) {
-            why = String((e && e.message) || e);
-          }
-        }
-        if (why) {
-          setOpenErr(why); // 不静默：面板上给一行红字说明怎么手动打开
+      const openIdeaInSidebar = (id, ev) => {
+        const ctrl = getSidebarRight();
+        const base = ovClickMode();
+        const mod = Boolean(ev && (ev.ctrlKey || ev.metaKey));
+        const want = mod ? (base === 'stay' ? 'jump' : 'stay') : base;
+        const r = ovRouteIdea(id, want, {
+          sessionId: currentSessionId(),
+          openTabIn: typeof ctrl?.openTabIn === 'function' ? (sid, kind) => ctrl.openTabIn(sid, kind) : null,
+          tabsIn: typeof ctrl?.tabsIn === 'function' ? (sid) => ctrl.tabsIn(sid) : null,
+          selectPanel: (v) => getLayout()?.selectPanel?.(v),
+          openTab: (kind) => dshCtx?.sidebarRight?.openTab?.(kind),
+        });
+        if (!r.ok) {
+          setOpenNote(null);
+          setOpenErr(r.why); // 不静默：面板上给一行红字说明怎么手动打开
           return;
         }
         setOpenErr(null);
-        if (ideaId) focusTabIdea(ideaId); // ③ 页签那边摊开这条想法（模块级小总线）
+        setOpenNote(r.fellBack ? t('ov.openFellBack') : null);
+        if (String(id ?? '')) focusTabIdea(String(id)); // 页签那边摊开这条想法（模块级小总线）
       };
 
       /** 「回到对话」：清掉中心面板的选择（layout 的 selectPanel(null) 就是内置回到会话那条路） */
@@ -2671,11 +2805,14 @@ window.__ModuleLoader__.load({
           jsx.jsx('div', { style: OV.foot, children: foot }, 'f'),
         ] }, key);
 
+      /** 行提示：写明「点一下会怎样、Ctrl/⌘ 点会怎样」——别让用户猜 */
+      const clickHint = () => t(ovClickMode() === 'stay' ? 'ov.clickHintStay' : 'ov.clickHintJump');
+
       const listRow = (idea, meta) =>
         jsx.jsxs('div', {
           style: OV.row(false),
-          onClick: () => openIdeaInSidebar(idea.id),
-          title: idea.title ? `${idea.title} · ${t('ov.openPanel')}` : t('ov.openPanel'),
+          onClick: (ev) => openIdeaInSidebar(idea.id, ev),
+          title: idea.title ? `${idea.title} · ${clickHint()}` : clickHint(),
           children: [
           jsx.jsx('span', { style: OV.rowTitle, children: idea.title || '(无标题)' }, 't'),
           meta ? jsx.jsx('span', { style: OV.rowMeta, children: meta }, 'm') : null,
@@ -2698,6 +2835,7 @@ window.__ModuleLoader__.load({
         jsx.jsxs('div', { style: OV.body, 'data-ov-state': err ? 'error' : 'ready', children: [
           err ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.loadFailed', { msg: err }) }, 'err') : null,
           openErr ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.openFailed', { msg: openErr }) }, 'openerr') : null,
+          openNote ? jsx.jsx('div', { style: { fontSize: 11.5, opacity: 0.7 }, children: openNote }, 'opennote') : null,
 
           jsx.jsxs('div', { style: OV.grid, children: [
             statCard('ideas', t('ov.stat.ideas'), ov.totalIdeas ?? 0, t('ov.foot.inbox', { n: counts.inbox ?? 0 })),
@@ -3660,6 +3798,36 @@ window.__ModuleLoader__.load({
     }
 
     /** 设置里的一节 */
+    /**
+     * 「总览里点想法」的走法设置（两项，点一下即存本机；与 Ctrl/⌘ 修饰键互补）。
+     * 纯前端偏好，不进后端设置（`normalizeSettings` 白名单那条规矩管的是后端）。
+     */
+    function AitmClickPref() {
+      const [mode, setMode] = react.useState(() => ovClickMode());
+      const opt = (v, key) =>
+        jsx.jsx('a', {
+          'data-click-pref': v,
+          style: {
+            cursor: 'pointer',
+            textDecoration: 'none',
+            marginRight: 12,
+            fontWeight: mode === v ? 600 : 400,
+            opacity: mode === v ? 1 : 0.6,
+          },
+          onClick: () => {
+            ovSetClickMode(v);
+            setMode(ovClickMode());
+          },
+          children: `${mode === v ? '● ' : '○ '}${tr(key)}`,
+        }, v);
+      return jsx.jsxs('div', { style: { marginTop: 10, fontSize: 12.5 }, children: [
+        jsx.jsx('span', { style: { opacity: 0.7, marginRight: 8 }, children: tr('ov.clickPref') }, 'label'),
+        opt('stay', 'ov.clickPrefStay'),
+        opt('jump', 'ov.clickPrefJump'),
+        jsx.jsx('div', { style: { opacity: 0.6, fontSize: 11.5, marginTop: 3 }, children: tr('ov.clickPrefHint') }, 'hint'),
+      ] }, 'clickpref');
+    }
+
     function AitmSection() {
       const [cfg, reload] = useAitmConfig();
       const row = (k, v) =>
@@ -3718,6 +3886,7 @@ window.__ModuleLoader__.load({
           ? jsx.jsx('p', { style: { fontSize: 12, color: 'var(--aitm-fg-err, #d35)', marginTop: 8 }, children: '后端版本不匹配：这个实例没有 feed.* 接口，面板与工具都会失败。按上面的处理步骤换到最新仓库起的实例。' }, 'stale')
           : null,
         jsx.jsx('p', { style: { fontSize: 12, opacity: 0.7, marginTop: 8 }, children: '环境变量：AITM_REPO（仓库路径）/ AITM_URL（连已有实例）/ AITM_SPAWN=0（只连不起）/ AITM_SUBPROCESS=0（不让宿主托管 CLI 进程）。改完重启 DSH 客户端。' }, 'hint'),
+        jsx.jsx(AitmClickPref, {}, 'clickpref'),
         jsx.jsx('a', { style: { fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }, onClick: reload, children: '重新检查' }, 'reload'),
       ] });
     }
@@ -3822,7 +3991,7 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { BoardTaskRow, IdeaDetailCard, AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard, AitmOverview };
+    exports.__components = { BoardTaskRow, IdeaDetailCard, AitmPanel, AitmTabTitle, AitmSection, AitmClickPref, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard, AitmOverview };
     /** 合集的口径副本（纯函数；verify-dsh 拿内核 src/shared/feed-format.ts 逐字比） */
     exports.__feedHelpers = { FEED_KIND_LABEL, FEED_BLOCKS, compactNumber, metricText, trendText, feedPrefill, markFeedRecorded };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
@@ -3830,7 +3999,24 @@ window.__ModuleLoader__.load({
     /** 给 verify 用：看板的列序 / 分桶 / 相对时间（纯计算，不依赖 React） */
     exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime, loadedClientRev, loadedClientScriptUrl, clientVerdict };
     /** 给 verify 用：总览的常量 / 图标 / 用量副本（内核 usage.ts 的镜像，verify 里真编译内核那份逐字比） */
-    exports.__overviewHelpers = { PANEL_ID, PANEL_ORDER, OverviewIcon, addUsage, sumUsage, viewUsage, fmtTokens, fmtCost, ovClock, tabFocus, focusTabIdea, consumeTabFocus };
+    exports.__overviewHelpers = {
+      PANEL_ID,
+      PANEL_ORDER,
+      OverviewIcon,
+      addUsage,
+      sumUsage,
+      viewUsage,
+      fmtTokens,
+      fmtCost,
+      ovClock,
+      tabFocus,
+      focusTabIdea,
+      consumeTabFocus,
+      OV_CLICK_KEY,
+      ovClickMode,
+      ovSetClickMode,
+      ovRouteIdea,
+    };
     /** 给 verify 用：客户端半边依赖的服务名（每个都必须有提供者，否则整块 pending → 白屏） */
     exports.__clientInject = [...inject];
     /** 给 verify 用：卡片注册了哪些工具名 */
