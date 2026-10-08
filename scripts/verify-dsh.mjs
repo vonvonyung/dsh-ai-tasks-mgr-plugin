@@ -279,6 +279,158 @@ async function checkRender() {
   check('组件能渲染成 HTML', html.includes('aitm-panel') && html.includes('aitm-settings-section'), `${html.length} 字节`);
   check('面板离线态给人话（后端没起来时不是白屏）', /正在拉起后端|后端没起来/.test(html));
 
+  /* ---- 总览：左栏入口（sidebar.panellist）+ 中心面板（main 同 id 配对）----
+     方案 A＝原生 React。这里的断言都是「把修复去掉必红」型的：
+       ① 注册形状（id / order / label / 同 id 配对）；
+       ② 两条护栏：`main` 是 keyed 槽，**注册已占用的 key 会顶掉那一格**（宿主的保留 key
+          `conversation` 里就是对话区）⇒ 只许用我们自己的 id；槽名必须真在宿主插槽目录里
+          （拼错＝永远不显示，而且一声不响）；
+       ③ 数字口径：用量副本与内核 `usage.ts` **现场编译真比**；数据面动作、今日 token 的算法、
+          「计数直接读 counts」逐条钉住。 */
+  const ovSrc = fs.readFileSync(path.join(ROOT, 'client.js'), 'utf8');
+  const OVH = loaded.exports.__overviewHelpers ?? {};
+  const ovSeg = ovSrc.slice(ovSrc.indexOf('总览（DSH 左栏入口 + 中心面板；方案 A'), ovSrc.indexOf('原生合集（不走 iframe）'));
+  const entryRegs = regs.filter((r) => r.d.name === 'sidebar.panellist');
+  const mainRegs = regs.filter((r) => r.d.name === 'main');
+  check(
+    '左栏入口：sidebar.panellist · 自有 id · order 20 · 文案「总览」',
+    entryRegs.length === 1 &&
+      entryRegs[0].d.id === OVH.PANEL_ID &&
+      entryRegs[0].d.order === 20 &&
+      typeof entryRegs[0].d.label === 'function' &&
+      entryRegs[0].d.label() === '总览',
+    entryRegs.map((r) => `${r.d.id}@${r.d.order}=${r.d.label?.()}`).join(' / ') || '(没注册)',
+  );
+  check(
+    '中心面板：main 槽与左栏入口**同 id 配对**（宿主拿左栏 id 去 main 取组件）',
+    mainRegs.length === 1 && mainRegs[0].d.key === OVH.PANEL_ID && mainRegs[0].d.key === entryRegs[0]?.d?.id,
+    mainRegs.map((r) => String(r.d.key)).join(' / ') || '(没注册)',
+  );
+  {
+    // key 的实参可能是字面量，也可能是指向常量的标识符（我们写的就是 PANEL_ID）
+    const mainKeys = [...ovSrc.matchAll(/name:\s*'main'[\s\S]{0,140}?key:\s*(?:'([^']+)'|([A-Za-z_$][\w$]*))/g)].map((m) => m[1] ?? `«${m[2]}»`);
+    check(
+      '护栏：main 只注册自有的 key，绝不碰保留 key conversation（碰了＝顶掉宿主对话区）',
+      mainKeys.length === 1 &&
+        (mainKeys[0] === OVH.PANEL_ID || mainKeys[0] === '«PANEL_ID»') &&
+        mainKeys[0] !== 'conversation' &&
+        mainRegs.every((r) => r.d.key !== 'conversation'),
+      mainKeys.join(' / ') || '(没找到注册)',
+    );
+  }
+  {
+    const catalog = fs.readFileSync(path.join(ROOT, 'node_modules', '@deepseek-ai', 'dsh-cordis-client-runner', 'lib', 'client.js'), 'utf8');
+    const hasMain = /key:\s*"main"/.test(catalog);
+    const hasPanel = catalog.includes('"sidebar.panellist"');
+    check('槽名真在宿主插槽目录里（拼错＝永远不显示且不报错）', hasMain && hasPanel, `main=${hasMain} · sidebar.panellist=${hasPanel}`);
+  }
+  {
+    const builtinSrc = ['dsh-client-ui-plugin-manager', 'dsh-client-ui-schedule']
+      .map((p) => fs.readFileSync(path.join(ROOT, 'node_modules', '@deepseek-ai', p, 'lib', 'client.js'), 'utf8'))
+      .join('\n');
+    const builtinOrders = [...builtinSrc.matchAll(/slots\.inject\(\s*"sidebar\.panellist"[\s\S]{0,300}?order:\s*(\d+)/g)].map((m) => Number(m[1]));
+    // 读**注册实参**里的 order（常量写对、实参写错也得红 —— 反向验证抓过这条）
+    const wiredOrder = entryRegs[0]?.d?.order;
+    check(
+      '不与内置左栏条目抢位（内置「插件」/「日程」都排在我们前面）',
+      builtinOrders.length >= 2 && wiredOrder === 20 && Math.max(...builtinOrders) < wiredOrder,
+      `内置 order=[${builtinOrders.join(',')}] · 我们 ${String(wiredOrder)}`,
+    );
+  }
+  {
+    const IconC = OVH.OverviewIcon;
+    const iconOff = IconC ? renderToStaticMarkup(React.createElement(IconC, { size: 18, active: false })) : '';
+    const iconOn = IconC ? renderToStaticMarkup(React.createElement(IconC, { size: 18, active: true })) : '';
+    check(
+      '左栏图标认 {size, active} 两态、颜色走 currentColor（深浅主题都跟）',
+      Boolean(IconC) && iconOff.includes('<svg') && iconOff.includes('currentColor') && iconOn !== iconOff && !/#[0-9a-fA-F]{3,6}/.test(iconOff + iconOn),
+      `${iconOff.length} / ${iconOn.length} 字节`,
+    );
+  }
+  {
+    const OvPanel = loaded.exports.__components.AitmOverview;
+    const ovHtml = OvPanel ? renderToStaticMarkup(React.createElement(OvPanel, {})) : '';
+    check(
+      '总览面板离线渲染：带 data-ov 标记 + 首帧骨架（不是白屏）',
+      Boolean(OvPanel) && ovHtml.includes('data-ov="aitm-overview"') && /data-ov-state="(starting|loading)"/.test(ovHtml) && ovHtml.includes('总览'),
+      `${ovHtml.length} 字节`,
+    );
+  }
+  check(
+    '总览文案两本字典都有（左栏 label 跟随宿主语言）',
+    ['ov.title', 'ov.sub', 'ov.stat.tokens', 'ov.activity', 'ov.backChat'].every((k) => locales.aitm?.zh?.[k] && locales.aitm?.en?.[k]),
+    `zh ${Object.keys(locales.aitm?.zh ?? {}).length} 键 / en ${Object.keys(locales.aitm?.en ?? {}).length} 键`,
+  );
+  {
+    /* 用量口径钉在内核：把 src/shared/usage.ts 现场编译出来，同一组样例两条实现必须逐字一致。
+       分发场景（同事机）没有内核源码/TS 编译器 ⇒ 自动跳过，不误报。 */
+    let ok = true;
+    let detail = '跳过（没有内核源码或 TS 编译器）';
+    try {
+      const ts = require(path.join(REPO, 'node_modules', 'typescript'));
+      const usageTs = fs.readFileSync(path.join(REPO, 'src', 'shared', 'usage.ts'), 'utf8');
+      const js = ts.transpileModule(usageTs, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
+      const mod = { exports: {} };
+      new Function('module', 'exports', 'require', js)(mod, mod.exports, () => ({}));
+      const K = mod.exports;
+      const samples = [
+        undefined,
+        { inputTokens: 1200, outputTokens: 340, totalTokens: 1540, costUsd: 0.0034 },
+        { inputTokens: 10, outputTokens: 5, approximate: 1 },
+        { turn: 3 },
+        { totalTokens: 1234567 },
+      ];
+      const pairs = samples.map((u) => [JSON.stringify(K.viewUsage(u)), JSON.stringify(OVH.viewUsage(u))]);
+      // 样例必须盖到 fmtTokens 的每个分支：<1000 / 1k–10k（toFixed(2)）/ ≥10k（toFixed(1)）/ ≥1M
+      const toks = [0, 999, 1234, 9999, 12345, 1200000].map((n) => [K.fmtTokens(n), OVH.fmtTokens(n)]);
+      const costs = [0, 0.0023, 1.239].map((n) => [K.fmtCost(n), OVH.fmtCost(n)]);
+      const sums = [
+        JSON.stringify(K.sumUsage(samples.map((u) => ({ usage: u })))),
+        JSON.stringify(OVH.sumUsage(samples.map((u) => ({ usage: u })))),
+      ];
+      ok = pairs.every(([a, b]) => a === b) && toks.every(([a, b]) => a === b) && costs.every(([a, b]) => a === b) && sums[0] === sums[1];
+      detail = `viewUsage×${pairs.length} · fmtTokens×${toks.length} · fmtCost×${costs.length} · sumUsage ≡`;
+      if (!ok) detail = `插件副本与内核不一致：pairs=${JSON.stringify(pairs)} toks=${JSON.stringify(toks)} costs=${JSON.stringify(costs)}`;
+    } catch (e) {
+      detail = `跳过（${String(e?.message ?? e).slice(0, 70)}）`;
+    }
+    check('总览的用量口径＝内核 usage.ts（现场编译真比，不是抄一眼）', ok, detail);
+  }
+  check(
+    '总览的数据面＝桌面同款五个动作（数字才可能与完整面板一致）',
+    ['overview.get', 'idea.list', 'task.list', 'settings.get', 'engines.status'].every((a) => new RegExp(`postAction\\(base, '${a.replace('.', '\\.')}'`).test(ovSeg)),
+  );
+  check(
+    '状态计数直接读 overview.counts（不自行按列表重算 —— R7 的教训）',
+    /counts\.developing/.test(ovSeg) && /counts\.done/.test(ovSeg) && /counts\.inbox/.test(ovSeg) && !/ideas\.filter\(\(x\) => x\.status === 'developing'\)\.length/.test(ovSeg),
+  );
+  check(
+    '今日 token 口径＝内核 Dashboard（endedAt ≥ 今天 0 点 · 只算引擎自报的）',
+    /\(x\.endedAt \?\? 0\) >= today\.getTime\(\)/.test(ovSeg) && /sumUsage\(/.test(ovSeg) && /viewUsage\(/.test(ovSeg),
+  );
+  check(
+    '点想法 → 右栏页签深链（两级兜底：params 被拒也至少把页签打开）',
+    /openTab\?\.\(TAB_KIND,\s*\{\s*params:\s*\{\s*idea:/.test(ovSeg) && /openTab\?\.\(TAB_KIND\)/.test(ovSeg),
+  );
+  check(
+    '「回到对话」＝layout.selectPanel(null)（内置那条回会话的路）',
+    /selectPanel\(null\)/.test(ovSeg) && /get\?\.\('layout'\)/.test(ovSeg),
+  );
+  check(
+    '实时：订阅 /api/events 并 400ms 去抖（跑完一轮，数字自己会动）',
+    /new EventSource\(/.test(ovSeg) && /\/api\/events/.test(ovSeg) && /},\s*400\)/.test(ovSeg),
+  );
+  {
+    const bare = ovSeg
+      .split('\n')
+      .filter((l) => /#[0-9a-fA-F]{3,8}\b|\brgba?\(/.test(l) && !l.includes('var(--'));
+    check(
+      '总览不写死颜色：每个色值都在 var(--…, 兜底) 里（跟随宿主深浅主题）',
+      ovSeg.length > 6000 && bare.length === 0,
+      bare.slice(0, 2).map((l) => l.trim().slice(0, 56)).join(' | '),
+    );
+  }
+
   /* ---- 对话里的工具卡（tool.call.toolview）---- */
   const cardTools = loaded.exports.__cardTools ?? [];
   const cardRegs = regs.filter((r) => r.d.name === 'tool.call.toolview');

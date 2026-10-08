@@ -311,6 +311,48 @@ window.__ModuleLoader__.load({
       'card.accept.merged': '已合并',
       'card.accept.recorded': '已记验收（未合并）',
       'card.accept.needsAck': '验证没过 —— 要人勾「验证没过也要合」才能继续',
+      // 总览（DSH 左栏入口 + 中心面板；口径抄渲染层 Dashboard.tsx，两边数字必须一致）
+      'ov.title': '总览',
+      'ov.sub': '想法从灵感到落地的整体状态',
+      'ov.refresh': '刷新',
+      'ov.openPanel': '打开 AI 任务台',
+      'ov.stat.ideas': '想法总数',
+      'ov.stat.dev': '开发中',
+      'ov.stat.review': '待验收',
+      'ov.stat.done': '已完成',
+      'ov.stat.files': '今日改动文件',
+      'ov.stat.tokens': '今日 token',
+      'ov.foot.inbox': '{n} 条还在灵感箱',
+      'ov.foot.running': '{n} 个任务正在执行',
+      'ov.foot.review': '看 diff 后合并回基线',
+      'ov.foot.done': '{m} 次合并 · {c} 个提交',
+      'ov.foot.files': '来自今天完成任务的 diff 统计',
+      'ov.foot.tokens': '引擎自报，未报的不计',
+      'ov.foot.notokens': '还没有引擎报过用量',
+      'ov.lifecycle': '生命周期分布',
+      'ov.queue': '引擎与队列',
+      'ov.queue.engine': '当前引擎',
+      'ov.queue.concurrency': '并发上限',
+      'ov.queue.queue': '队列',
+      'ov.queue.value': '{r} 执行中 · {q} 排队',
+      'ov.queue.autocommit': '自动提交',
+      'ov.on': '开',
+      'ov.off': '关',
+      'ov.none': '未设置',
+      'ov.reviewList': '待验收',
+      'ov.reviewEmpty': '没有待验收的想法',
+      'ov.blockedList': '受阻',
+      'ov.blockedEmpty': '没有被卡住的想法',
+      'ov.blockedNote': '{n} 个想法处于受阻',
+      'ov.activity': '最近动态',
+      'ov.activityEmpty': '还没有活动记录',
+      'ov.loading': '正在汇总…',
+      'ov.loadingHint': '首次读取本地数据',
+      'ov.notReady': 'AI 任务台后端没起来。',
+      'ov.starting': '正在拉起后端（首次启动要构建一次界面，约 3–5 秒）…',
+      'ov.loadFailed': '读取失败：{msg}',
+      'ov.updated': '更新于 {t}',
+      'ov.backChat': '回到对话',
     };
     const en = {
       'card.openPanel': 'Open in panel',
@@ -485,6 +527,48 @@ window.__ModuleLoader__.load({
       'card.accept.merged': 'Merged',
       'card.accept.recorded': 'Recorded (not merged)',
       'card.accept.needsAck': 'Verify failed — needs a human to tick "merge anyway"',
+      // Overview (DSH left rail entry + central panel; mirrors the renderer Dashboard)
+      'ov.title': 'Overview',
+      'ov.sub': 'Ideas from spark to shipped, at a glance',
+      'ov.refresh': 'Refresh',
+      'ov.openPanel': 'Open AI Tasks panel',
+      'ov.stat.ideas': 'Ideas',
+      'ov.stat.dev': 'In progress',
+      'ov.stat.review': 'To review',
+      'ov.stat.done': 'Done',
+      'ov.stat.files': 'Files changed today',
+      'ov.stat.tokens': 'Tokens today',
+      'ov.foot.inbox': '{n} still in inbox',
+      'ov.foot.running': '{n} task(s) running',
+      'ov.foot.review': 'Check the diff, then merge back',
+      'ov.foot.done': '{m} merge(s) · {c} commit(s)',
+      'ov.foot.files': "From today's finished task diffs",
+      'ov.foot.tokens': 'Engine-reported only; unreported are skipped',
+      'ov.foot.notokens': 'No engine has reported usage yet',
+      'ov.lifecycle': 'Lifecycle spread',
+      'ov.queue': 'Engine & queue',
+      'ov.queue.engine': 'Active engine',
+      'ov.queue.concurrency': 'Concurrency',
+      'ov.queue.queue': 'Queue',
+      'ov.queue.value': '{r} running · {q} queued',
+      'ov.queue.autocommit': 'Auto-commit',
+      'ov.on': 'on',
+      'ov.off': 'off',
+      'ov.none': 'not set',
+      'ov.reviewList': 'Awaiting review',
+      'ov.reviewEmpty': 'Nothing is awaiting review',
+      'ov.blockedList': 'Blocked',
+      'ov.blockedEmpty': 'Nothing is blocked',
+      'ov.blockedNote': '{n} idea(s) blocked',
+      'ov.activity': 'Recent activity',
+      'ov.activityEmpty': 'No activity yet',
+      'ov.loading': 'Summarizing…',
+      'ov.loadingHint': 'Reading local data for the first time',
+      'ov.notReady': 'The AI Tasks backend is not up.',
+      'ov.starting': 'Starting the backend (first run builds the UI, ~3–5s)…',
+      'ov.loadFailed': 'Load failed: {msg}',
+      'ov.updated': 'Updated {t}',
+      'ov.backChat': 'Back to chat',
     };
 
     /**
@@ -2137,6 +2221,490 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /* ─────────── 总览（DSH 左栏入口 + 中心面板；方案 A：原生 React） ───────────
+
+       入口＝左栏 `sidebar.panellist` 的一个图标（order 20 —— 内置「插件」0 /「日程」10 之后），
+       面板＝中心区 `main` 槽**同 id 配对**（宿主拿左栏条目的 id 去 keyed 的 main 槽取组件，
+       见 layout 包那句 "Central panel selected by sidebar entry id"）。
+
+       ⚠️ `main` 是 **keyed** 槽：DSH 自带的 `conversation` 是保留 key。我们自家的面板必须用自己的
+       id（`aitm-overview`）—— 注册到 `conversation` 会把宿主对话区整个顶掉（replaceRisk:
+       shadows-shipped-ui）。verify-dsh 有护栏盯着这条。
+
+       数据面与桌面 `Dashboard.tsx` **同一套动作、同一套口径**（overview.get / idea.list /
+       task.list / settings.get / engines.status）：状态计数直接读 `overview.counts`（不自行按
+       列表重算，R7 的教训），今日 token 只累加引擎**自报**的用量（没报的不计入、不估）。 */
+    const PANEL_ID = 'aitm-overview';
+    const PANEL_ORDER = 20;
+
+    /** 宿主 ctx 的落点（apply 时赋值）。组件里只用它做「切页签 / 回对话」两件事，全都 try 包住。 */
+    let dshCtx = null;
+
+    /**
+     * 左栏图标：环 + 进度弧（「总览」＝一眼看到进度）。
+     * 宿主给的是 `{ size, active }`（`SidebarPanelIconOwnerProps`）：两处都要认 ——
+     * 只画固定 stroke 的话，选中态下图标自己不亮，用户只能靠底色猜。颜色走 `currentColor`：
+     * 亮/暗两套主题由宿主的前景色带过来，我们自己不写死颜色。
+     */
+    function OverviewIcon(props) {
+      const size = Number(props && props.size) || 18;
+      const active = Boolean(props && props.active);
+      // 注意：`jsx.jsxs(type, props, key)` 就是 react/jsx-runtime 的官方签名 —— 第三参是 **key**，
+      // 不是 children。children 必须写在 props 里（写错的表现：渲染出一只空 svg，还不报错）。
+      return jsx.jsxs('svg', {
+        width: size,
+        height: size,
+        viewBox: '0 0 24 24',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeLinecap: 'round',
+        'aria-hidden': 'true',
+        children: [
+          jsx.jsx('circle', { cx: 12, cy: 12, r: 7.8, strokeWidth: active ? 2 : 1.6, opacity: active ? 0.9 : 0.55 }, 'ring'),
+          jsx.jsx('path', { d: 'M4.2 12a7.8 7.8 0 0 1 7.8-7.8', strokeWidth: 2.6 }, 'arc'),
+          jsx.jsx('circle', { cx: 12, cy: 4.2, r: 2.1, fill: 'currentColor', stroke: 'none' }, 'head'),
+          jsx.jsx('circle', { cx: 12, cy: 12, r: 1.8, fill: 'currentColor', stroke: 'none' }, 'hub'),
+        ],
+      });
+    }
+
+    /**
+     * 用量的三件套**抄内核**（`src/shared/usage.ts` 的 addUsage / sumUsage / viewUsage / fmtTokens / fmtCost）：
+     * 插件是独立包、不能 import 仓库源码，所以这里是副本 —— 改内核那份时记得同步。
+     * `verify-dsh` 的断言是**真比**：把内核 usage.ts 现场编译出来，同一组样例两条实现输出必须逐字相同
+     * （分发场景没有内核源码/编译器 ⇒ 该条自动跳过，不误报）。
+     */
+    const USAGE_KEYS = ['inputTokens', 'outputTokens', 'totalTokens', 'costUsd'];
+
+    function addUsage(a, b) {
+      if (!b || !Object.keys(b).length) return a;
+      const out = { ...(a ?? {}) };
+      const allow = [...USAGE_KEYS, 'approximate'];
+      for (const [k, v] of Object.entries(b)) {
+        if (!allow.includes(k)) continue;
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+        out[k] = k === 'approximate' ? 1 : (out[k] ?? 0) + v;
+      }
+      return out;
+    }
+
+    function sumUsage(list) {
+      return list.reduce((acc, cur) => addUsage(acc, cur && cur.usage), undefined);
+    }
+
+    function viewUsage(usage) {
+      if (!usage) return null;
+      const n = (k) => (typeof usage[k] === 'number' && Number.isFinite(usage[k]) ? usage[k] : undefined);
+      const input = n('inputTokens') ?? 0;
+      const output = n('outputTokens') ?? 0;
+      const total = n('totalTokens') ?? (input || output ? input + output : undefined);
+      const cost = n('costUsd');
+      if (!total && !cost) return null;
+      return { input, output, total: total ?? 0, cost, approximate: n('approximate') === 1 };
+    }
+
+    function fmtTokens(n) {
+      if (!Number.isFinite(n) || n <= 0) return '0';
+      if (n < 1000) return String(Math.round(n));
+      if (n < 1000000) return `${(n / 1000).toFixed(n < 10000 ? 2 : 1)}k`;
+      return `${(n / 1000000).toFixed(2)}M`;
+    }
+
+    function fmtCost(usd) {
+      if (!Number.isFinite(usd) || usd <= 0) return '$0';
+      if (usd < 0.01) return `$${(usd * 1000).toFixed(1)}m`;
+      return `~$${usd.toFixed(2)}`;
+    }
+
+    /** 时刻 → `HH:mm`（本地时区；「更新于」那行用，不去猜相对时间） */
+    function ovClock(ts) {
+      try {
+        const d = new Date(ts);
+        const p = (x) => String(x).padStart(2, '0');
+        return `${p(d.getHours())}:${p(d.getMinutes())}`;
+      } catch {
+        return '—';
+      }
+    }
+
+    /**
+     * 总览的样式。铁律与看板/日历一致：**颜色一律 `var(--dsw-*, 兜底)`**（宿主的深浅主题自己会切），
+     * 六个统计卡用 `repeat(auto-fit, minmax(158px, 1fr))` —— 宽面板三列、窄面板自动落两列/一列。
+     */
+    const OV = {
+      /* flex: '1 1 auto' + minHeight: 0 ⇒ 作为面板子项被压缩时内部滚动条才生效（看板那条经验） */
+      wrap: { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: 0, fontSize: 12.5 },
+      head: {
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: 8,
+        padding: '8px 12px 7px',
+        borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
+        flex: 'none',
+      },
+      title: { fontSize: 14, fontWeight: 600 },
+      sub: { fontSize: 11.5, opacity: 0.62 },
+      stamp: { fontSize: 11, opacity: 0.55, marginLeft: 'auto' },
+      grow: { flex: 1, minWidth: 0 },
+      link: { cursor: 'pointer', fontSize: 11.5, opacity: 0.78, textDecoration: 'underline' },
+      btn: {
+        cursor: 'pointer',
+        fontSize: 11.5,
+        padding: '2px 9px',
+        borderRadius: 6,
+        color: 'inherit',
+        border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))',
+        background: 'transparent',
+      },
+      body: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: '10px 12px 14px', display: 'flex', flexDirection: 'column', gap: 10 },
+      center: { margin: 'auto', textAlign: 'center', opacity: 0.75, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', padding: 20 },
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(158px, 1fr))', gap: 8, flex: 'none' },
+      card: {
+        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
+        borderRadius: 8,
+        padding: '8px 10px 9px',
+        background: 'var(--dsw-alias-bg-layer-1, transparent)',
+        minWidth: 0,
+      },
+      k: { fontSize: 11.5, opacity: 0.68, display: 'flex', alignItems: 'center', gap: 5 },
+      dot: (on) => ({
+        width: 6,
+        height: 6,
+        borderRadius: 3,
+        display: 'inline-block',
+        flex: 'none',
+        background: on ? 'var(--aitm-fg-ok, #85e8bd)' : 'var(--aitm-fg-warn, #ffce7a)',
+      }),
+      v: { fontSize: 21, fontWeight: 600, marginTop: 2, fontVariantNumeric: 'tabular-nums' },
+      foot: { fontSize: 11, opacity: 0.6, marginTop: 2 },
+      /* 骨架屏（首帧）：块用当前前景色的 8% 叠色 —— 亮暗两套主题下都成立 */
+      skel: (w, h) => ({
+        width: w,
+        height: h,
+        borderRadius: 5,
+        background: 'color-mix(in srgb, var(--dsw-alias-label-primary, currentColor) 8%, transparent)',
+      }),
+      duo: { display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', flex: 'none' },
+      pane: {
+        flex: '1 1 240px',
+        minWidth: 0,
+        border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.25))',
+        borderRadius: 8,
+        padding: '7px 9px 8px',
+        background: 'var(--dsw-alias-bg-layer-1, transparent)',
+      },
+      paneTitle: { fontSize: 11.5, fontWeight: 600, opacity: 0.82, marginBottom: 4, display: 'flex', gap: 6, alignItems: 'center' },
+      list: { display: 'flex', flexDirection: 'column' },
+      row: (on) => ({
+        display: 'flex',
+        alignItems: 'baseline',
+        gap: 6,
+        padding: '2px 3px',
+        borderRadius: 5,
+        cursor: 'pointer',
+        minWidth: 0,
+        background: on ? 'color-mix(in srgb, var(--dsw-alias-label-primary, currentColor) 7%, transparent)' : 'transparent',
+      }),
+      rowTitle: { flex: '1 1 auto', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      rowMeta: { flex: 'none', fontSize: 11, opacity: 0.6, fontVariantNumeric: 'tabular-nums' },
+      empty: { fontSize: 11.5, opacity: 0.55, padding: '3px 3px 2px' },
+      meter: {
+        display: 'flex',
+        height: 8,
+        borderRadius: 5,
+        overflow: 'hidden',
+        background: 'color-mix(in srgb, var(--dsw-alias-label-primary, currentColor) 10%, transparent)',
+        marginBottom: 8,
+      },
+      legend: { display: 'flex', flexWrap: 'wrap', gap: '5px 12px' },
+      legendItem: { display: 'flex', alignItems: 'center', gap: 5, fontSize: 11.5 },
+      chipBg: (c) => ({ width: 8, height: 8, borderRadius: 3, display: 'inline-block', flex: 'none', background: c }),
+      activity: { display: 'flex', flexDirection: 'column', maxHeight: 220, overflowY: 'auto' },
+      actRow: { display: 'flex', gap: 8, alignItems: 'baseline', padding: '1px 0', minWidth: 0 },
+      actWhen: { flex: 'none', width: 62, fontSize: 11, opacity: 0.55, textAlign: 'right' },
+    };
+
+    /**
+     * 总览面板（左栏「总览」点开的中心区）。
+     * 实时：订阅 `/api/events`（与原生看板/桌面的同一条 SSE），400ms 去抖后重拉 ——
+     * 一轮任务跑完，这里的数字自己会动；`loadRef` 不进依赖，免得去抖计时把连接重开。
+     */
+    function AitmOverview() {
+      const [cfg] = useAitmConfig();
+      const [data, setData] = react.useState(null);
+      const [err, setErr] = react.useState(null);
+      const [, tick] = react.useState(0);
+      const loadRef = react.useRef(null);
+      const base = cfg.base;
+      const ready = Boolean(base) && cfg.health?.ok;
+
+      const t = (k, vars) => String(zh[k] ?? en[k] ?? k).replace(/\{(\w+)\}/g, (m, n) => (vars && n in vars ? String(vars[n]) : m));
+
+      const load = react.useCallback(async () => {
+        if (!base) return;
+        try {
+          const [ov, ideas, tasks, settings, engines] = await Promise.all([
+            postAction(base, 'overview.get', {}),
+            postAction(base, 'idea.list', {}),
+            postAction(base, 'task.list', {}),
+            postAction(base, 'settings.get', {}),
+            postAction(base, 'engines.status', {}),
+          ]);
+          setData({
+            ov,
+            ideas: Array.isArray(ideas) ? ideas : [],
+            tasks: Array.isArray(tasks) ? tasks : [],
+            settings: settings ?? null,
+            engines: Array.isArray(engines) ? engines : [],
+            at: Date.now(),
+          });
+          setErr(null);
+        } catch (e) {
+          setErr(String((e && e.message) || e));
+        }
+      }, [base]);
+
+      react.useEffect(() => {
+        void load();
+      }, [load]);
+      loadRef.current = load;
+
+      /* 事件流：面板/工具那边动了数据（记想法、改状态、任务状态）这里自动跟一次（400ms 去抖） */
+      react.useEffect(() => {
+        if (!base || typeof EventSource !== 'function') return undefined;
+        let timer = null;
+        let es = null;
+        try {
+          es = new EventSource(`${base}/api/events`);
+          es.onmessage = () => {
+            if (timer) return;
+            timer = setTimeout(() => {
+              timer = null;
+              void loadRef.current?.();
+            }, 400);
+          };
+        } catch {
+          /* 不支持就算了，反正有「刷新」 */
+        }
+        return () => {
+          if (timer) clearTimeout(timer);
+          try {
+            es?.close();
+          } catch {
+            /* 关连接失败无所谓 */
+          }
+        };
+      }, [base]);
+
+      /* 让「更新于」和「今天」自己走字：每分钟轻量重渲染一次（不重新拉数据） */
+      react.useEffect(() => {
+        const timer = setInterval(() => tick((n) => n + 1), 60000);
+        return () => clearInterval(timer);
+      }, []);
+
+      /** 点想法 → 打开右侧栏的 AI 任务台并深链到它（＝「回到对话」那条路）。
+          两级兜底：宿主若拒掉 params（老宿主没有这套参数校验），至少把页签打开，不做静默失败。 */
+      const openIdeaInSidebar = (id) => {
+        try {
+          dshCtx?.sidebarRight?.openTab?.(TAB_KIND, { params: { idea: String(id) } });
+          return;
+        } catch {
+          /* params 被拒 ⇒ 退一级 */
+        }
+        try {
+          dshCtx?.sidebarRight?.openTab?.(TAB_KIND);
+        } catch {
+          /* 没有会话/面板不可用：点了没反应，不抛 */
+        }
+      };
+
+      /** 「回到对话」：清掉中心面板的选择（layout 的 selectPanel(null) 就是内置回到会话那条路） */
+      const layoutPanel = dshCtx?.get?.('layout');
+      const canBack = Boolean(layoutPanel && typeof layoutPanel.selectPanel === 'function');
+      const backToChat = () => {
+        if (!canBack) return;
+        try {
+          layoutPanel.selectPanel(null);
+        } catch {
+          /* 老宿主/布局还没就绪：算了 */
+        }
+      };
+
+      const head = jsx.jsxs('div', { style: OV.head, children: [
+        jsx.jsx(OverviewIcon, { size: 16, active: true }, 'ico'),
+        jsx.jsx('span', { style: OV.title, children: t('ov.title') }, 'title'),
+        jsx.jsx('span', { style: OV.sub, children: t('ov.sub') }, 'sub'),
+        data ? jsx.jsx('span', { style: OV.stamp, children: t('ov.updated', { t: ovClock(data.at) }) }, 'stamp') : null,
+        jsx.jsx('span', { style: { flex: 1 } }, 'grow'),
+        jsx.jsx('a', { style: OV.link, onClick: () => void load(), children: t('ov.refresh') }, 'refresh'),
+        canBack ? jsx.jsx('a', { style: OV.link, onClick: backToChat, children: t('ov.backChat') }, 'back') : null,
+      ] }, 'head');
+
+      /* ① 后端没起来（或还在启动）—— 与面板同一条口径，别只显示空白 */
+      if (!ready) {
+        return jsx.jsxs('div', { style: OV.wrap, 'data-ov': PANEL_ID, children: [
+          head,
+          jsx.jsxs('div', { style: OV.center, 'data-ov-state': cfg.loading ? 'starting' : 'down', children: [
+            jsx.jsx('div', { children: cfg.loading ? t('ov.starting') : t('ov.notReady') }, 'msg'),
+            cfg.error ? jsx.jsx('div', { style: { fontSize: 11, opacity: 0.6 }, children: String(cfg.error) }, 'err') : null,
+            jsx.jsx('a', { style: OV.link, onClick: () => { try { dshCtx?.sidebarRight?.openTab?.(TAB_KIND); } catch { /* 打不开就算了 */ } }, children: t('ov.openPanel') }, 'open'),
+          ] }, 'state'),
+        ] });
+      }
+
+      /* ② 首帧骨架：先把六张卡的位置占住，数据到了再换成数字（避免「一进来是空白」） */
+      if (!data) {
+        return jsx.jsxs('div', { style: OV.wrap, 'data-ov': PANEL_ID, children: [
+          head,
+          jsx.jsxs('div', { style: OV.body, 'data-ov-state': 'loading', children: [
+            jsx.jsx('div', { style: OV.grid, children: Array.from({ length: 6 }, (_, i) =>
+              jsx.jsxs('div', { style: OV.card, children: [
+                jsx.jsx('div', { style: OV.skel('52%', 9) }, 'k'),
+                jsx.jsx('div', { style: { ...OV.skel('34%', 18), marginTop: 6 } }, 'v'),
+                jsx.jsx('div', { style: { ...OV.skel('72%', 8), marginTop: 6 } }, 'f'),
+              ] }, `sk${i}`),
+            ) }, 'grid'),
+            jsx.jsx('div', { style: { ...OV.empty, textAlign: 'center', padding: 10 }, children: err ? t('ov.loadFailed', { msg: err }) : t('ov.loading') }, 'msg'),
+            jsx.jsx('div', { style: { ...OV.empty, textAlign: 'center' }, children: t('ov.loadingHint') }, 'hint'),
+          ] }, 'body'),
+        ] });
+      }
+
+      /* ③ 有数据的那一层。口径逐条对齐桌面 Dashboard.tsx（数字不一致就是 bug） */
+      const ov = data.ov ?? {};
+      const counts = ov.counts ?? {};
+      const total = Math.max(1, ov.totalIdeas ?? 0);
+      const running = data.tasks.filter((x) => x.status === 'running');
+      const reviewIdeas = data.ideas.filter((x) => x.status === 'review');
+      const blockedIdeas = data.ideas.filter((x) => x.status === 'blocked');
+      const merged = data.tasks.filter((x) => x.workspace?.mergedAt).length;
+      const commits = data.tasks.reduce((n, x) => n + (x.commits?.length ?? 0), 0);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayUsage = sumUsage(data.tasks.filter((x) => (x.endedAt ?? 0) >= today.getTime()).map((x) => ({ usage: x.usage })));
+      const todayView = viewUsage(todayUsage);
+      const activeEngine = data.engines.find((e) => e.active) ?? null;
+      const queued = ov.queued ?? data.tasks.filter((x) => x.status === 'queued').length;
+      const activity = Array.isArray(ov.activity) ? ov.activity : [];
+
+      const statCard = (key, k, v, foot, extra) =>
+        jsx.jsxs('div', { style: OV.card, 'data-ov-card': key, children: [
+          jsx.jsxs('div', { style: OV.k, children: [
+            k,
+            extra === 'engine' && activeEngine ? jsx.jsx('i', { style: OV.dot(Boolean(activeEngine.available)), title: activeEngine.label ?? '' }, 'dot') : null,
+            extra === 'review' && reviewIdeas.length ? jsx.jsx('i', { style: OV.dot(false) }, 'dot') : null,
+          ] }, 'k'),
+          jsx.jsx('div', { style: OV.v, children: v }, 'v'),
+          jsx.jsx('div', { style: OV.foot, children: foot }, 'f'),
+        ] }, key);
+
+      const listRow = (idea, meta) =>
+        jsx.jsxs('div', { style: OV.row(false), onClick: () => openIdeaInSidebar(idea.id), title: idea.title, children: [
+          jsx.jsx('span', { style: OV.rowTitle, children: idea.title || '(无标题)' }, 't'),
+          meta ? jsx.jsx('span', { style: OV.rowMeta, children: meta }, 'm') : null,
+        ] }, idea.id);
+
+      const pane = (key, title, count, items, emptyText, metaOf) =>
+        jsx.jsxs('div', { style: OV.pane, 'data-ov-pane': key, children: [
+          jsx.jsxs('div', { style: OV.paneTitle, children: [
+            title,
+            jsx.jsx('span', { style: { opacity: 0.6 }, children: String(count) }, 'n'),
+          ] }, 'title'),
+          items.length
+            ? jsx.jsx('div', { style: OV.list, children: items.slice(0, 8).map((x) => listRow(x, metaOf ? metaOf(x) : null)) }, 'list')
+            : jsx.jsx('div', { style: OV.empty, children: emptyText }, 'empty'),
+          items.length > 8 ? jsx.jsx('div', { style: OV.empty, children: `+${items.length - 8}` }, 'more') : null,
+        ] }, key);
+
+      return jsx.jsxs('div', { style: OV.wrap, 'data-ov': PANEL_ID, children: [
+        head,
+        jsx.jsxs('div', { style: OV.body, 'data-ov-state': err ? 'error' : 'ready', children: [
+          err ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.loadFailed', { msg: err }) }, 'err') : null,
+
+          jsx.jsxs('div', { style: OV.grid, children: [
+            statCard('ideas', t('ov.stat.ideas'), ov.totalIdeas ?? 0, t('ov.foot.inbox', { n: counts.inbox ?? 0 })),
+            statCard('dev', t('ov.stat.dev'), counts.developing ?? 0, t('ov.foot.running', { n: running.length })),
+            statCard('review', t('ov.stat.review'), reviewIdeas.length, t('ov.foot.review'), 'review'),
+            statCard('done', t('ov.stat.done'), counts.done ?? 0, t('ov.foot.done', { m: merged, c: commits })),
+            statCard('files', t('ov.stat.files'), ov.changedFilesToday ?? 0, t('ov.foot.files')),
+            statCard(
+              'tokens',
+              t('ov.stat.tokens'),
+              todayView ? fmtTokens(todayView.total) : '—',
+              todayView
+                ? `${todayView.cost ? `${fmtCost(todayView.cost)} · ` : ''}${todayView.approximate ? '≈ · ' : ''}${t('ov.foot.tokens')}`
+                : t('ov.foot.notokens'),
+              'engine',
+            ),
+          ] }, 'grid'),
+
+          jsx.jsxs('div', { style: OV.card, children: [
+            jsx.jsxs('div', { style: OV.paneTitle, children: [t('ov.lifecycle'), jsx.jsx('span', { style: { opacity: 0.6 }, children: String(ov.totalIdeas ?? 0) }, 'n')] }, 'title'),
+            jsx.jsx('div', { style: OV.meter, children: IDEA_ORDER.map((s) =>
+              counts[s] ? jsx.jsx('i', {
+                style: { width: `${((counts[s] ?? 0) / total) * 100}%`, background: STATUS_COLOR[s]?.[1] ?? 'var(--dsw-alias-label-secondary, currentColor)' },
+                title: `${IDEA_LABEL[s]} ${counts[s] ?? 0}`,
+              }, s) : null,
+            ) }, 'meter'),
+            jsx.jsx('div', { style: OV.legend, children: IDEA_ORDER.map((s) =>
+              jsx.jsxs('span', { style: OV.legendItem, children: [
+                jsx.jsx('i', { style: OV.chipBg(STATUS_COLOR[s]?.[1] ?? 'var(--dsw-alias-label-secondary, currentColor)') }, 'c'),
+                jsx.jsx('span', { children: IDEA_LABEL[s] }, 'l'),
+                jsx.jsx('b', { style: { fontVariantNumeric: 'tabular-nums' }, children: String(counts[s] ?? 0) }, 'n'),
+              ] }, s),
+            ) }, 'legend'),
+          ] }, 'lifecycle'),
+
+          jsx.jsxs('div', { style: OV.duo, children: [
+            pane('review', t('ov.reviewList'), reviewIdeas.length, reviewIdeas, t('ov.reviewEmpty'), (x) => ovClock(x.updatedAt)),
+            pane('blocked', t('ov.blockedList'), blockedIdeas.length, blockedIdeas, t('ov.blockedEmpty'), (x) => ovClock(x.updatedAt)),
+          ] }, 'duo'),
+
+          jsx.jsxs('div', { style: OV.duo, children: [
+            jsx.jsxs('div', { style: OV.card, 'data-ov-pane': 'queue', children: [
+              jsx.jsx('div', { style: OV.paneTitle, children: t('ov.queue') }, 'title'),
+              jsx.jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 }, children: [
+                jsx.jsxs('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8 }, children: [
+                  jsx.jsx('span', { style: { opacity: 0.68 }, children: t('ov.queue.engine') }, 'k'),
+                  jsx.jsxs('span', { style: { display: 'inline-flex', gap: 5, alignItems: 'center' }, children: [
+                    jsx.jsx('i', { style: OV.dot(Boolean(activeEngine?.available)) }, 'dot'),
+                    activeEngine ? (activeEngine.label ?? activeEngine.id ?? t('ov.none')) : t('ov.none'),
+                  ] }, 'v'),
+                ] }, 'engine'),
+                jsx.jsxs('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8 }, children: [
+                  jsx.jsx('span', { style: { opacity: 0.68 }, children: t('ov.queue.concurrency') }, 'k'),
+                  jsx.jsx('span', { style: { fontVariantNumeric: 'tabular-nums' }, children: String(data.settings?.concurrency ?? '—') }, 'v'),
+                ] }, 'conc'),
+                jsx.jsxs('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8 }, children: [
+                  jsx.jsx('span', { style: { opacity: 0.68 }, children: t('ov.queue.queue') }, 'k'),
+                  jsx.jsx('span', { style: { fontVariantNumeric: 'tabular-nums' }, children: t('ov.queue.value', { r: ov.running ?? 0, q: queued }) }, 'v'),
+                ] }, 'queue'),
+                jsx.jsxs('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 8 }, children: [
+                  jsx.jsx('span', { style: { opacity: 0.68 }, children: t('ov.queue.autocommit') }, 'k'),
+                  jsx.jsx('span', { children: data.settings?.autoCommit ? t('ov.on') : t('ov.off') }, 'v'),
+                ] }, 'ac'),
+              ] }, 'rows'),
+            ] }, 'queuecard'),
+            jsx.jsxs('div', { style: { ...OV.card, flex: '1 1 240px', minWidth: 0 }, 'data-ov-pane': 'activity', children: [
+              jsx.jsx('div', { style: OV.paneTitle, children: t('ov.activity') }, 'title'),
+              activity.length
+                ? jsx.jsx('div', { style: OV.activity, children: activity.map((a, i) =>
+                    jsx.jsxs('div', { style: OV.actRow, children: [
+                      jsx.jsx('span', { style: OV.actWhen, children: relTime(a.ts) }, 'w'),
+                      jsx.jsx('span', { style: OV.rowTitle, title: a.text, children: a.text }, 't'),
+                    ] }, i),
+                  ) }, 'list')
+                : jsx.jsx('div', { style: OV.empty, children: t('ov.activityEmpty') }, 'empty'),
+            ] }, 'activitycard'),
+          ] }, 'duo2'),
+
+          blockedIdeas.length
+            ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-warn, #ffce7a)' }, children: t('ov.blockedNote', { n: blockedIdeas.length }) }, 'blockednote')
+            : null,
+        ] }, 'body'),
+      ] });
+    }
+
     /* ─────────── 原生合集（不走 iframe） ─────────── */
 
     /**
@@ -3100,6 +3668,30 @@ window.__ModuleLoader__.load({
           `aitm.card.${tool}`,
         );
       }
+      // ⓪″ 记下宿主 ctx：总览面板要用它「切右栏页签 / 回对话」（拿不到时那两处自己退化成不可点）
+      dshCtx = ctx;
+      // ⓪‴ 左栏入口「总览」（order 20，在内置「插件」0 /「日程」10 之后）+ 中心面板（main 槽，**同 id 配对**）
+      //      ⚠️ main 是 keyed 槽、`conversation` 是宿主的保留 key：这里只允许用我们自己的 PANEL_ID。
+      /* 左栏条目的文案跟随**宿主语言**（bind(NS) 查我们刚注册的两本字典）：绑不上（老宿主/离线）才退回 zh。
+         label 是延迟调用的函数（内置两条先例也都写函数），宿主随时可以重渲染它。 */
+      const boundOv = typeof ctx.locale?.bind === 'function' ? ctx.locale.bind(NS) : null;
+      const tPanel = (k) => {
+        const hit = boundOv ? boundOv(k) : null;
+        return hit && hit !== k ? hit : String(zh[k] ?? en[k] ?? k);
+      };
+      ctx.effect(
+        () =>
+          ctx.slots.inject('sidebar.panellist', () =>
+            /* 形状照官方 example 与两条内置先例（client-ui-plugin-manager / client-ui-schedule）：
+               { name, id, order, label, locale }。**id 用我们自己的**：复用宿主的 id 会占进它那一格并顶掉它。 */
+            ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: PANEL_ORDER, label: () => tPanel('ov.title'), locale: NS }, OverviewIcon),
+          ),
+        'aitm.panel.entry',
+      );
+      ctx.effect(
+        () => ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID }, AitmOverview)),
+        'aitm.panel.main',
+      );
       // ① 右侧栏页签类型（kind → 打开时用；id → body/title 两个 keyed 槽认这个 key）
       ctx.effect(
         () =>
@@ -3152,13 +3744,15 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply;
     exports.inject = inject;
-    exports.__components = { BoardTaskRow, IdeaDetailCard, AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard };
+    exports.__components = { BoardTaskRow, IdeaDetailCard, AitmPanel, AitmTabTitle, AitmSection, AitmToolCard, AitmCalendar, CalendarGrid, AitmBoard, BoardColumn, BoardCard, AitmFeed, FeedItemCard, AitmOverview };
     /** 合集的口径副本（纯函数；verify-dsh 拿内核 src/shared/feed-format.ts 逐字比） */
     exports.__feedHelpers = { FEED_KIND_LABEL, FEED_BLOCKS, compactNumber, metricText, trendText, feedPrefill, markFeedRecorded };
     /** 给 verify 用：日历的纯计算（网格/分组），不依赖 React */
     exports.__calendarHelpers = { monthGridDays, shiftMonth, dayKeyLocal, groupByDayLocal, monthLabel, dayLabel, postAction };
     /** 给 verify 用：看板的列序 / 分桶 / 相对时间（纯计算，不依赖 React） */
     exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime, loadedClientRev, loadedClientScriptUrl, clientVerdict };
+    /** 给 verify 用：总览的常量 / 图标 / 用量副本（内核 usage.ts 的镜像，verify 里真编译内核那份逐字比） */
+    exports.__overviewHelpers = { PANEL_ID, PANEL_ORDER, OverviewIcon, addUsage, sumUsage, viewUsage, fmtTokens, fmtCost, ovClock };
     /** 给 verify 用：客户端半边依赖的服务名（每个都必须有提供者，否则整块 pending → 白屏） */
     exports.__clientInject = [...inject];
     /** 给 verify 用：卡片注册了哪些工具名 */
