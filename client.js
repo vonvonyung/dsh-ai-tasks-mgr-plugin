@@ -353,6 +353,7 @@ window.__ModuleLoader__.load({
       'ov.loadFailed': '读取失败：{msg}',
       'ov.updated': '更新于 {t}',
       'ov.backChat': '回到对话',
+      'ov.openFailed': '没能打开右侧栏「AI 任务台」：{msg}（可从右侧栏的「+」手动打开）',
     };
     const en = {
       'card.openPanel': 'Open in panel',
@@ -569,6 +570,7 @@ window.__ModuleLoader__.load({
       'ov.loadFailed': 'Load failed: {msg}',
       'ov.updated': 'Updated {t}',
       'ov.backChat': 'Back to chat',
+      'ov.openFailed': 'Could not open the AI Tasks tab in the right sidebar: {msg} (open it from the sidebar’s “+” menu)',
     };
 
     /**
@@ -1880,6 +1882,35 @@ window.__ModuleLoader__.load({
       return env.data;
     }
 
+    /**
+     * 模块级小总线：总览（左栏中心面板）→ 右侧栏「AI 任务台」页签「把这条想法摊开」。
+     *
+     * 为什么不走宿主的 tab 导航参数：我们的页签类型**没声明 params 形状**，宿主对没声明的参数
+     * 只会静默丢掉（真机实测点了没反应）；而页签 body 与总览面板本来就是同一份模块实例，
+     * 在自己家里传话最稳，也不赌宿主版本。
+     * `consumeTabFocus` 兜的是「页签被这次点击**刚**打开」：事件比组件挂载先到，
+     * 挂载时把 pending 取走补一次（取出即清空，免得以后再挂载时又蹦出来）。
+     */
+    const tabFocus = { pending: null, listeners: new Set() };
+
+    function focusTabIdea(id) {
+      const v = id == null ? null : String(id);
+      tabFocus.pending = v;
+      for (const fn of [...tabFocus.listeners]) {
+        try {
+          fn(v);
+        } catch {
+          /* 某个订阅者出错不影响别的订阅者 */
+        }
+      }
+    }
+
+    function consumeTabFocus() {
+      const v = tabFocus.pending;
+      tabFocus.pending = null;
+      return v;
+    }
+
     const CAL = {
       /* flex: '1 1 auto' + minHeight: 0 ⇒ 作为面板 flex 子项被压缩时，内部滚动条才生效；
          只写 height: '100%' 的话，面板里还有页签条要占高度，内容会把面板撑破（底部被裁掉）。 */
@@ -2113,6 +2144,23 @@ window.__ModuleLoader__.load({
       const src = cfg.base
         ? `${cfg.base}/?embed=1&view=${encodeURIComponent(view)}${embedIdea ? `&idea=${encodeURIComponent(embedIdea)}` : ''}`
         : '';
+      /* 总览那边点了某条想法 → 这里把它摊开（与合集/日历点想法同一条路：切回看板 + 详情）。
+         两条路都要：已经在看板 ⇒ 监听立刻生效；页签是这次点击刚被打开 ⇒ 事件先到，
+         挂载时再从 pending 补取一次（见 tabFocus 注释）。 */
+      react.useEffect(() => {
+        const onFocus = (id) => {
+          if (!id) return;
+          setView('board');
+          setEmbedIdea(null);
+          setBoardIdea(id);
+        };
+        tabFocus.listeners.add(onFocus);
+        const staged = consumeTabFocus();
+        if (staged) onFocus(staged);
+        return () => {
+          tabFocus.listeners.delete(onFocus);
+        };
+      }, []);
       const tab = (id, text) =>
         jsx.jsx(
           'a',
@@ -2433,6 +2481,8 @@ window.__ModuleLoader__.load({
       const [cfg] = useAitmConfig();
       const [data, setData] = react.useState(null);
       const [err, setErr] = react.useState(null);
+      /** 「点想法去右栏」失败时的可见提示（以前吞掉错误 ⇒ 用户看到的是「点了没反应」） */
+      const [openErr, setOpenErr] = react.useState(null);
       const [, tick] = react.useState(0);
       const loadRef = react.useRef(null);
       const base = cfg.base;
@@ -2502,29 +2552,52 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer);
       }, []);
 
-      /** 点想法 → 打开右侧栏的 AI 任务台并深链到它（＝「回到对话」那条路）。
-          两级兜底：宿主若拒掉 params（老宿主没有这套参数校验），至少把页签打开，不做静默失败。 */
-      const openIdeaInSidebar = (id) => {
+      /** layout 服务（拿不到就返回 null；「回对话」与「点想法」两条路都用它） */
+      const getLayout = () => {
         try {
-          dshCtx?.sidebarRight?.openTab?.(TAB_KIND, { params: { idea: String(id) } });
-          return;
+          return dshCtx?.get?.('layout') ?? null;
         } catch {
-          /* params 被拒 ⇒ 退一级 */
-        }
-        try {
-          dshCtx?.sidebarRight?.openTab?.(TAB_KIND);
-        } catch {
-          /* 没有会话/面板不可用：点了没反应，不抛 */
+          return null;
         }
       };
 
-      /** 「回到对话」：清掉中心面板的选择（layout 的 selectPanel(null) 就是内置回到会话那条路） */
-      const layoutPanel = dshCtx?.get?.('layout');
-      const canBack = Boolean(layoutPanel && typeof layoutPanel.selectPanel === 'function');
-      const backToChat = () => {
-        if (!canBack) return;
+      /**
+       * 点想法 → **先回对话** → 打开/聚焦右侧栏「AI 任务台」→ 让页签摊开这条想法。
+       *
+       * ⚠️ 顺序不能反：右栏页签挂在「会话」作用域上，而宿主的「在屏会话」只在**对话占着主列**时
+       * 才存在 —— sidebar-right 源码那句就是
+       * `show(layout.panelInfo.activePanelId === null ? selected.sessionId : undefined)`；
+       * 总览占着主列时 openTab 会抛 `sidebarRight: no session surface is mounted`
+       * （2026-10-08 真机实测「点了没反应」，根因就在这里：老代码把异常吞了）。
+       */
+      const openIdeaInSidebar = (id) => {
+        const ideaId = id == null ? '' : String(id);
+        let why = '';
         try {
-          layoutPanel.selectPanel(null);
+          getLayout()?.selectPanel?.(null); // ① 把主列还给对话（右栏才有落脚点）
+        } catch (e) {
+          why = String((e && e.message) || e);
+        }
+        if (!why) {
+          try {
+            dshCtx?.sidebarRight?.openTab?.(TAB_KIND); // ② 开页签（已开就是聚焦）
+          } catch (e) {
+            why = String((e && e.message) || e);
+          }
+        }
+        if (why) {
+          setOpenErr(why); // 不静默：面板上给一行红字说明怎么手动打开
+          return;
+        }
+        setOpenErr(null);
+        if (ideaId) focusTabIdea(ideaId); // ③ 页签那边摊开这条想法（模块级小总线）
+      };
+
+      /** 「回到对话」：清掉中心面板的选择（layout 的 selectPanel(null) 就是内置回到会话那条路） */
+      const canBack = Boolean(getLayout() && typeof getLayout().selectPanel === 'function');
+      const backToChat = () => {
+        try {
+          getLayout()?.selectPanel?.(null);
         } catch {
           /* 老宿主/布局还没就绪：算了 */
         }
@@ -2599,7 +2672,11 @@ window.__ModuleLoader__.load({
         ] }, key);
 
       const listRow = (idea, meta) =>
-        jsx.jsxs('div', { style: OV.row(false), onClick: () => openIdeaInSidebar(idea.id), title: idea.title, children: [
+        jsx.jsxs('div', {
+          style: OV.row(false),
+          onClick: () => openIdeaInSidebar(idea.id),
+          title: idea.title ? `${idea.title} · ${t('ov.openPanel')}` : t('ov.openPanel'),
+          children: [
           jsx.jsx('span', { style: OV.rowTitle, children: idea.title || '(无标题)' }, 't'),
           meta ? jsx.jsx('span', { style: OV.rowMeta, children: meta }, 'm') : null,
         ] }, idea.id);
@@ -2620,6 +2697,7 @@ window.__ModuleLoader__.load({
         head,
         jsx.jsxs('div', { style: OV.body, 'data-ov-state': err ? 'error' : 'ready', children: [
           err ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.loadFailed', { msg: err }) }, 'err') : null,
+          openErr ? jsx.jsx('div', { style: { fontSize: 11.5, color: 'var(--aitm-fg-err, #d35)' }, children: t('ov.openFailed', { msg: openErr }) }, 'openerr') : null,
 
           jsx.jsxs('div', { style: OV.grid, children: [
             statCard('ideas', t('ov.stat.ideas'), ov.totalIdeas ?? 0, t('ov.foot.inbox', { n: counts.inbox ?? 0 })),
@@ -3752,7 +3830,7 @@ window.__ModuleLoader__.load({
     /** 给 verify 用：看板的列序 / 分桶 / 相对时间（纯计算，不依赖 React） */
     exports.__boardHelpers = { IDEA_ORDER, IDEA_LABEL, groupByStatus, relTime, loadedClientRev, loadedClientScriptUrl, clientVerdict };
     /** 给 verify 用：总览的常量 / 图标 / 用量副本（内核 usage.ts 的镜像，verify 里真编译内核那份逐字比） */
-    exports.__overviewHelpers = { PANEL_ID, PANEL_ORDER, OverviewIcon, addUsage, sumUsage, viewUsage, fmtTokens, fmtCost, ovClock };
+    exports.__overviewHelpers = { PANEL_ID, PANEL_ORDER, OverviewIcon, addUsage, sumUsage, viewUsage, fmtTokens, fmtCost, ovClock, tabFocus, focusTabIdea, consumeTabFocus };
     /** 给 verify 用：客户端半边依赖的服务名（每个都必须有提供者，否则整块 pending → 白屏） */
     exports.__clientInject = [...inject];
     /** 给 verify 用：卡片注册了哪些工具名 */

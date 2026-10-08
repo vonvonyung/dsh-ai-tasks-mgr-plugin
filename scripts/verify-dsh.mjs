@@ -409,10 +409,6 @@ async function checkRender() {
     /\(x\.endedAt \?\? 0\) >= today\.getTime\(\)/.test(ovSeg) && /sumUsage\(/.test(ovSeg) && /viewUsage\(/.test(ovSeg),
   );
   check(
-    '点想法 → 右栏页签深链（两级兜底：params 被拒也至少把页签打开）',
-    /openTab\?\.\(TAB_KIND,\s*\{\s*params:\s*\{\s*idea:/.test(ovSeg) && /openTab\?\.\(TAB_KIND\)/.test(ovSeg),
-  );
-  check(
     '「回到对话」＝layout.selectPanel(null)（内置那条回会话的路）',
     /selectPanel\(null\)/.test(ovSeg) && /get\?\.\('layout'\)/.test(ovSeg),
   );
@@ -420,6 +416,72 @@ async function checkRender() {
     '实时：订阅 /api/events 并 400ms 去抖（跑完一轮，数字自己会动）',
     /new EventSource\(/.test(ovSeg) && /\/api\/events/.test(ovSeg) && /},\s*400\)/.test(ovSeg),
   );
+  {
+    /* 2026-10-08 真机实测：点想法没反应。根因＝右栏页签只在**对话占着主列**时才有「在屏会话」
+       （sidebar-right 源码：`show(layout.panelInfo.activePanelId === null ? selected.sessionId : undefined)`；
+       总览占着主列时 openTab 抛 `no session surface is mounted`）。修法＝先回对话再开页签 —— 顺序别反。 */
+    const iBack = ovSeg.indexOf('selectPanel?.(null)');
+    const iOpen = ovSeg.indexOf('openTab?.(TAB_KIND)');
+    check(
+      '点想法：先把主列还给对话，再开右栏页签（顺序反了 ⇒ openTab 抛 no session surface）',
+      iBack >= 0 && iOpen > iBack,
+      `selectPanel@${iBack} < openTab@${iOpen}`,
+    );
+    check(
+      '点想法：不再向宿主 tab 传 params（我们的页签类型没声明 params 形状，宿主会静默丢掉）',
+      !/openTab\?\.\(TAB_KIND,\s*\{/.test(ovSeg) && /focusTabIdea\(ideaId\)/.test(ovSeg),
+    );
+  }
+  {
+    const fnStart = ovSeg.indexOf('const openIdeaInSidebar = (id) => {');
+    const fnEnd = fnStart >= 0 ? ovSeg.indexOf('\n      };', fnStart) : -1;
+    const fnBody = fnStart >= 0 && fnEnd > fnStart ? ovSeg.slice(fnStart, fnEnd) : '';
+    check(
+      '点想法失败不再静默：错误攒起来 → setOpenErr → 面板上有一行红字（含手动打开的路）',
+      fnBody.length > 200 &&
+        /setOpenErr\(why\)/.test(fnBody) &&
+        /t\('ov\.openFailed',\s*\{\s*msg:\s*openErr\s*\}\)/.test(ovSeg) &&
+        Boolean(locales.aitm?.zh?.['ov.openFailed']) &&
+        Boolean(locales.aitm?.en?.['ov.openFailed']),
+    );
+  }
+  {
+    const BUS = OVH;
+    const got = [];
+    const onFocus = (id) => got.push(id);
+    const bad = () => {
+      throw new Error('boom');
+    };
+    BUS.tabFocus.listeners.add(bad); // 排前面：一个订阅者抛错不该连坐
+    BUS.tabFocus.listeners.add(onFocus);
+    let threw = null;
+    try {
+      BUS.focusTabIdea('i_bus_1');
+    } catch (e) {
+      threw = String(e?.message ?? e); // 抛出去也算「连坐」，判红
+    }
+    const staged = BUS.consumeTabFocus();
+    const staged2 = BUS.consumeTabFocus(); // 取出即清空
+    BUS.tabFocus.listeners.delete(bad);
+    BUS.tabFocus.listeners.delete(onFocus);
+    BUS.consumeTabFocus();
+    check(
+      '小总线：即时送达 + 「待取」只有一次 + 订阅者抛错不连坐',
+      threw === null && JSON.stringify(got) === JSON.stringify(['i_bus_1']) && staged === 'i_bus_1' && staged2 === null,
+      `threw=${String(threw)} got=${JSON.stringify(got)} staged=${String(staged)} again=${String(staged2)}`,
+    );
+  }
+  {
+    const panelSeg = ovSeg === '' ? '' : ovSrc.slice(ovSrc.indexOf('function AitmPanel()'), ovSrc.indexOf('/* ─────────── 总览（DSH 左栏入口'));
+    check(
+      '页签 body 订阅小总线并补取 pending（点了想法真的会摊开那条）',
+      panelSeg.length > 2000 &&
+        /tabFocus\.listeners\.add\(/.test(panelSeg) &&
+        /const staged = consumeTabFocus\(\)/.test(panelSeg) &&
+        /if \(staged\) onFocus\(staged\)/.test(panelSeg) &&
+        /setBoardIdea\(id\)/.test(panelSeg),
+    );
+  }
   {
     const bare = ovSeg
       .split('\n')
