@@ -49,7 +49,16 @@ async function main() {
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = process.env.AITM_REPO ?? path.resolve(ROOT, '..');
-const DSH_HOME = process.env.DSH_HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-verify-'));
+/**
+ * 自检一律用自己的**临时 home**，不看外面的 `DSH_HOME`。
+ *
+ * 为什么：本机（以及在 DSH 里跑命令的一切场合）`DSH_HOME` 是被设成**用户真实 home** 的
+ * （实测 `DSH_HOME=C:\Users\19980\.dsh`），于是自检起的每个 headless / web 会话都写进用户真实会话库 ——
+ * 2026-10-09 一晚三次自检往 `~/.dsh/sessions/--D-Code-…-dsh-plugin--/` 里塞了 13 个测试会话，
+ * 而且读回来的 meta 会混进**旧版本插件留下的记录**（差点误判成「新字段没落盘」，白追一轮）。
+ * 显式想指到某个 home 就设 `AITM_VERIFY_DSH_HOME`（意图明确才生效）。
+ */
+const DSH_HOME = process.env.AITM_VERIFY_DSH_HOME ?? fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-verify-'));
 /**
  * 起 dsh 一律走 `process.execPath <包里的 lib/bin.js>`：
  * Windows 上 `.bin/dsh` 是 sh 脚本、`.bin/dsh.cmd` 是批处理垫片 —— Node ≥20.12 直接 spawn 它们会
