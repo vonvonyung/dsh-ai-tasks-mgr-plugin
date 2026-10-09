@@ -54,7 +54,7 @@
 
    ```bash
    node scripts/vendor-plugin.mjs        # 构建 + 拷内核/面板产物进 dsh-plugin/ + npm pack
-   # → release/dsh-plugin-aitm-0.2.0.tgz（脚本会核对包内容：缺内核/面板产物会直接报错）
+   # → release/dsh-plugin-aitm-0.3.0.tgz（脚本会核对包内容：缺内核/面板产物会直接报错）
    ```
 
 2. **同事那台机器**：
