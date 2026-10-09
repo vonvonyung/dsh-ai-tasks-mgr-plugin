@@ -4007,9 +4007,16 @@ window.__ModuleLoader__.load({
           // 后面的「本页 …」是**这个页面实际加载的**那份；两者不一致 ⇒ 页面上是旧代码，重启 DSH + 硬刷。
           row('面板', (cfg.pluginVersion ? `${cfg.pluginVersion}${cfg.clientRev ? ` · client.js rev ${cfg.clientRev}` : ''}` : '—') + panelNote()),
           row('数据目录', cfg.identity?.dataDir ?? cfg.health?.dataDir ?? '—'),
+          // 宿主缝：插件靠 ctx.get 拿 DSH 的 subprocess/agents/sessionQuery 才能托管进程、做 P1 只读镜像
+          // 与 P2 进程内借道。取不到时**表现是「看着正常但 DSH 里的对话永不同步」**，所以必须显式摊出来
+          // （2026-10-09 真机事故，见 docs/DESIGN-NOTES.md §7.10）。
+          row('宿主缝', !cfg.hostSeam ? '—' : cfg.hostSeam.ok ? '通（P1 镜像 + P2 借道都生效）' : '不通（P1/P2 会静默失效）'),
           row('仓库', cfg.repo ?? '—'),
           row('错误', cfg.error ?? '无'),
         ] }, 'rows'),
+        cfg.hostSeam && !cfg.hostSeam.ok
+          ? jsx.jsx('p', { style: { fontSize: 11.5, opacity: 0.8, marginTop: 6, lineHeight: 1.5 }, children: `${cfg.hostSeam.verdict}\n${cfg.hostSeam.services}` }, 'hostseam')
+          : null,
         stale
           ? jsx.jsx('p', { style: { fontSize: 12, color: 'var(--aitm-fg-err, #d35)', marginTop: 8 }, children: '后端版本不匹配：这个实例没有 feed.* 接口，面板与工具都会失败。按上面的处理步骤换到最新仓库起的实例。' }, 'stale')
           : null,

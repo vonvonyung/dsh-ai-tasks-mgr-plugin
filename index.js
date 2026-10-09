@@ -633,6 +633,9 @@ export function makeSubprocessSpawner(subprocess) {
   };
 }
 
+/** 每个宿主服务**最后一次**取用的结果（取到了就清成 null）。给诊断说清「缝为什么是空的」。 */
+const hostServiceNotes = new Map();
+
 /**
  * 取一个宿主服务。**必须走 `ctx.get()`，不能写 `ctx.sessionQuery` 这种属性访问**。
  *
@@ -649,12 +652,49 @@ export function makeSubprocessSpawner(subprocess) {
  * 也别改成往 `inject` 里加：任一服务缺失会让插件一直 pending（白屏那类故障）。
  */
 export function hostService(ctx, name) {
-  try {
-    const svc = ctx?.get?.(name);
-    return svc ?? null;
-  } catch {
+  if (!ctx) {
+    hostServiceNotes.set(name, '没有宿主 ctx');
     return null;
   }
+  if (typeof ctx.get !== 'function') {
+    hostServiceNotes.set(name, '宿主 ctx 上没有 get()（不像 cordis 的 ctx）');
+    return null;
+  }
+  try {
+    const svc = ctx.get(name);
+    if (svc === undefined || svc === null) {
+      hostServiceNotes.set(name, `ctx.get('${name}') 是空的：服务没提供，或提供它的插件还没激活`);
+      return null;
+    }
+    hostServiceNotes.set(name, null);
+    return svc;
+  } catch (err) {
+    hostServiceNotes.set(name, `ctx.get('${name}') 抛异常：${String(err?.message ?? err)}`);
+    return null;
+  }
+}
+
+/**
+ * 「宿主缝到底通没通」——**按需现探**，别把结论钉死在启动那一刻（服务可能是后提供的）。
+ * 四个服务各有用途：`subprocess`＝CLI 进程交宿主托管；`agents` + `sessionQuery`＝P1 只读镜像与
+ * P2 进程内借道；`sessions`＝借道收尾 flush。
+ *
+ * 为什么值得专门摊出来：2026-10-09 真机上这四个全取不到、被 `try/catch` 吞成 null，
+ * 表现却是「面板看着一切正常，只是 DSH 里的对话永远不同步」——**静默失效**。
+ * 现在 `aitm_health` / 设置节 / `/aitm-plugin/config` / `doctor` 都读它，不用再翻插件内存日志。
+ */
+export function hostSeamDiagnosis(ctx) {
+  const names = ['subprocess', 'agents', 'sessionQuery', 'sessions'];
+  const services = names
+    .map((n) => `${n}=${hostService(ctx, n) ? '有' : `无（${hostServiceNotes.get(n) ?? '未探'}）`}`)
+    .join('；');
+  if (!ctx) {
+    return { ok: false, verdict: '用不上宿主缝：这次不是进程内模式（外部后端 AITM_URL，或 AITM_L3=0 的旧桥）', services };
+  }
+  if (hostService(ctx, 'sessionQuery') && hostService(ctx, 'agents')) {
+    return { ok: true, verdict: '宿主缝是通的：P1 只读镜像与 P2 进程内借道都该生效', services };
+  }
+  return { ok: false, verdict: '宿主缝不完整：P1 只读镜像 / P2 进程内借道会静默失效（看下面哪个是「无」）', services };
 }
 
 /**
@@ -1086,7 +1126,7 @@ export async function ensureBase() {
 export { stop };
 
 /** 离线自检用的钩子（verify-dsh 拿假 subprocess / session 服务把适配层过一遍） */
-export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession, hostService };
+export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession, hostService, hostSeamDiagnosis };
 
 /** 诊断用：把「插件眼里的世界」原样抖出来（scripts/doctor.mjs 用；也让 verify 能断言自检逻辑） */
 export function diagnose() {
@@ -1119,6 +1159,9 @@ export function diagnose() {
     rendererDistPresent: exists(path.join(RENDERER_DIST(), 'index.html')),
     runningMode: state.mode,
     registry: PIDFILE,
+    /** 宿主缝现探（四个服务逐个探一遍）+ 启动时那次子进程缝结论 */
+    hostSeam: hostSeamDiagnosis(state.ctx),
+    spawnSeam: state.spawnSeam,
     backendLog: BACKEND_LOG,
     node: process.version,
   };
@@ -1164,6 +1207,9 @@ const schemaHealth = {
     apiRev: { type: 'integer' },
     apiRevRequired: { type: 'integer' },
     log: { type: 'array', items: { type: 'string' } },
+    /** 宿主缝结论（一句话）+ 逐个服务的探活明细（P1 镜像 / P2 借道见 docs/DESIGN-NOTES.md §7.10） */
+    hostSeam: { type: 'string' },
+    hostSeamServices: { type: 'string' },
   },
 };
 
@@ -1323,6 +1369,9 @@ export function apply(ctx) {
               apiRevRequired: REQUIRED_API_REV,
               identity: state.identity,
               log: state.log.slice(-8),
+              // 宿主缝现探 + 启动时那次子进程缝自检（state.spawnSeam 以前写了没人读，这里摊给面板）
+              hostSeam: hostSeamDiagnosis(state.ctx),
+              spawnSeam: state.spawnSeam,
               // 后端日志尾部（面板直接显示）；整份日志在 BACKEND_LOG 文件里
               tail: (() => {
                 try {
@@ -1361,6 +1410,8 @@ export function apply(ctx) {
           version: typeof v?.version === 'string' ? v.version : null,
           dataDir: typeof v?.dataDir === 'string' ? v.dataDir : null,
           error: typeof v?.error === 'string' ? v.error : null,
+          hostSeam: typeof v?.hostSeam === 'string' ? v.hostSeam : null,
+          hostSeamServices: typeof v?.hostSeamServices === 'string' ? v.hostSeamServices : null,
         }),
         render: (_a, v) => [
           {
@@ -1369,13 +1420,18 @@ export function apply(ctx) {
               ? `AI 任务台可用：${v.base}（${v.actions} 个 action，apiRev=${v.apiRev ?? '?'}，版本 ${v.version ?? '未知'}${v.dataDir ? `，数据目录 ${v.dataDir}` : ''}）`
               : `不可用：${JSON.stringify(v)}`,
           },
+          ...(v.hostSeam
+            ? [{ type: 'text', text: `宿主缝：${v.hostSeam}${v.hostSeamServices ? `\n${v.hostSeamServices}` : ''}` }]
+            : []),
         ],
       },
       async execute() {
+        const seam = hostSeamDiagnosis(state.ctx);
+        const seamFields = { hostSeam: seam.verdict, hostSeamServices: seam.services };
         try {
           const base = await ensureBase();
           const h = state.l3 ? await state.l3.health() : await health(base, 3000);
-          if (!h?.ok) return { ok: false, error: 'GET /api/health 不通', base, log: state.log.slice(-10) };
+          if (!h?.ok) return { ok: false, error: 'GET /api/health 不通', base, ...seamFields, log: state.log.slice(-10) };
           // 数据目录：新后端在 health 里给；老后端没有，才回落到 settings.get
           let dataDir = h.dataDir;
           if (!dataDir) {
@@ -1393,10 +1449,11 @@ export function apply(ctx) {
             ...(dataDir ? { dataDir } : {}),
             apiRev: id.apiRev,
             apiRevRequired: REQUIRED_API_REV,
+            ...seamFields,
             log: state.log.slice(-6),
           };
         } catch (err) {
-          return { ok: false, error: String(err?.message ?? err), log: state.log.slice(-10) };
+          return { ok: false, error: String(err?.message ?? err), ...seamFields, log: state.log.slice(-10) };
         }
       },
     }),

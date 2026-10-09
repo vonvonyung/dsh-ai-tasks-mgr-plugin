@@ -128,7 +128,16 @@ const check = (name, ok, extra = '') => {
  * 坑：`session.v4.jsonl.zstd` 是**多帧 zstd**（每次 append 一帧），一次
  * `zstdDecompressSync(整文件)` 只解出第一帧（189 字节）——必须按魔数切帧逐帧解。
  */
-const readSessionEvents = (home) => {
+/**
+ * 扫一份 DSH home 里的会话日志（zstd 帧拼接的 jsonl）。
+ *
+ * **注意 `changedSince`**：`DSH_HOME` 经常是被环境变量顶到**用户真实 home** 的
+ * （实测本机 `DSH_HOME=C:\Users\19980\.dsh`，里面躺着 44 个会话日志），
+ * 于是「找第一条 kind=health 的 meta」会读到**别人（旧版本插件）留下的记录**——
+ * 2026-10-09 就因此把一条 0.3.0 时代的 7 键 meta 当成本次结果，白追了一轮。
+ * 传 `snapshotSessions(home)` 的返回值后，只解码**本次运行新写/长大了**的文件。
+ */
+const readSessionEvents = (home, changedSince = null) => {
   const zlib = require('node:zlib');
   if (typeof zlib.zstdDecompressSync !== 'function') return { skipped: true, records: [] };
   const MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
@@ -156,6 +165,15 @@ const readSessionEvents = (home) => {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
       else if (e.name.endsWith('.jsonl.zstd')) {
+        if (changedSince) {
+          let size = null;
+          try {
+            size = fs.statSync(p).size;
+          } catch {
+            continue;
+          }
+          if (changedSince.get(p) === size) continue; // 没动过 = 不是本次写的
+        }
         for (const line of decode(fs.readFileSync(p)).split('\n')) {
           if (!line.trim()) continue;
           try {
@@ -170,6 +188,33 @@ const readSessionEvents = (home) => {
   const sessions = path.join(home, 'sessions');
   if (fs.existsSync(sessions)) walk(sessions);
   return { skipped: false, records };
+};
+
+/** 会话日志的「文件名 → 字节数」快照：配合 `readSessionEvents(home, snap)` 只读本次写的那几个 */
+const snapshotSessions = (home) => {
+  const out = new Map();
+  const walk = (dir) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.jsonl.zstd')) {
+        try {
+          out.set(p, fs.statSync(p).size);
+        } catch {
+          /* 刚被删掉就算了 */
+        }
+      }
+    }
+  };
+  const sessions = path.join(home, 'sessions');
+  if (fs.existsSync(sessions)) walk(sessions);
+  return out;
 };
 
 const freePort = () =>
@@ -1814,6 +1859,16 @@ async function checkTools() {
     check('逃生开关 AITM_SUBPROCESS=0 → 仍走内核自带 spawn', offSwitch.spawn === null && /AITM_SUBPROCESS/.test(String(offSwitch.why)), String(offSwitch.why));
     delete process.env.AITM_SUBPROCESS;
 
+    /* 宿主缝**可观测**（2026-10-09 晚）：这次事故最贵的地方不是取不到服务，是取不到时**一片静默** ——
+       面板照常、只是 DSH 里的对话永不同步。所以「缝为什么是空的」必须能一句话问出来。 */
+    check('宿主半边导出 hostSeamDiagnosis（设置节 / aitm_health / doctor 都读它）', typeof HH?.hostSeamDiagnosis === 'function');
+    const seamBad = HH.hostSeamDiagnosis(fakeCtx); // 离线 ctx：subprocess 有，agents / sessionQuery 没有
+    check(
+      '缝不完整时结论点出「哪个服务没有」而不是沉默',
+      seamBad?.ok === false && String(seamBad.verdict).includes('P1') && String(seamBad.services).includes("sessionQuery=无"),
+      `ok=${String(seamBad?.ok)} services=${String(seamBad?.services)}`,
+    );
+
     /* 适配层离线过一遍：spec 形状 / env 剥离 DSH_* / error·close / 晚注册补发 / kill→terminate */
     fakeSubprocess.calls.length = 0;
     fakeSubprocess.script = { lines: ['{"type":"system","subtype":"init","session_id":"s-seam"}', '{"type":"result","subtype":"success","result":"接缝里跑起来了","session_id":"s-seam"}'], code: 0 };
@@ -2018,6 +2073,14 @@ async function checkTools() {
       sessionFlushCalls.length === 1 && sessionFlushCalls[0]?.cwd === '/tmp/wt',
       `flush=${String(sessionFlushCalls.length)}`,
     );
+    /* 同上那条「缝通了」的正面：三个会话服务都在时，结论必须是「通」——
+       免得把「探活永远说没缝」这种反向 bug 放过去。 */
+    const seamGood = HH.hostSeamDiagnosis(fakeSessionCtx);
+    check(
+      '缝通了时结论为「通」（P1 镜像 + P2 借道都生效）',
+      seamGood?.ok === true && String(seamGood.verdict).includes('通'),
+      `ok=${String(seamGood?.ok)} verdict=${String(seamGood?.verdict)}`,
+    );
 
   } finally {
     await host?.stop?.().catch?.(() => undefined);
@@ -2096,6 +2159,16 @@ async function checkDsh() {
     check('③ 客户端分片送达', chunk.status === 200 && text.includes('aitm-panel'), `HTTP ${chunk.status} / ${text.length} 字节`);
   }
 
+  /* ③″ 宿主缝可观测的「用户自己能查」那条路：插件自己的 /aitm-plugin/config 要带 hostSeam
+     （设置节读它；也方便用户在浏览器里直接看「P1/P2 到底有没有缝上」）。 */
+  const cfgRes = await fetch(`http://127.0.0.1:${port}/aitm-plugin/config`, { headers: { cookie } });
+  const cfgJson = await cfgRes.json().catch(() => null);
+  check(
+    '③″ /aitm-plugin/config 带出宿主缝结论（不必翻插件内存日志）',
+    typeof cfgJson?.hostSeam?.verdict === 'string' && typeof cfgJson?.hostSeam?.services === 'string',
+    `HTTP ${cfgRes.status} seam=${JSON.stringify(cfgJson?.hostSeam ?? null).slice(0, 130)}`,
+  );
+
   /*
    * ③' 我们 inject 的每个服务都必须真的有人提供。
    * 这条是给 R9 白屏上保险：客户端插件 `inject` 里写了一个**永远不会到的服务名**，DSH 不会报错，
@@ -2171,6 +2244,9 @@ async function checkDsh() {
     ].join('\n'),
   );
 
+  // 先给会话库拍个快照（**必须在起会话之前**）：DSH_HOME 可能被环境变量顶到用户真实 home（本机就是），
+  // 不圈范围的话下面读到的可能是旧版插件留下的 meta（2026-10-09 白追过一轮）
+  const sessionsBefore = snapshotSessions(DSH_HOME);
   const headless = spawn(process.execPath, dshArgs(['--profile', 'headless', '--patch', patchStub, '--patch', PATCH, '--json', '健康检查']), {
     cwd: ROOT,
     env: { ...process.env, DSH_HOME, AITM_REPO: REPO, STUB_API_KEY: 'stub' },
@@ -2187,14 +2263,22 @@ async function checkDsh() {
   //       ③ 没有因为我们拉起的长驻子进程而卡住不退出
   const hasRealData = toolResult.includes(`${String(EXPECTED_ACTIONS)} 个 action`);
   check('④ 端到端：工具拿到真后端数据', code === 0 && hasRealData, `${toolResult.slice(0, 160)}（exit=${code}）`);
+  // ④″ 可观测也要端到端到达：静默失效是这次事故最贵的地方，健康检查的输出里必须看得见宿主缝结论
+  check('④″ aitm_health 端到端带出宿主缝结论', code === 0 && toolResult.includes('宿主缝'), toolResult.slice(-170));
 
   // ④' 卡片的数据通道：工具侧 presentationMeta 必须**原样落到会话日志的 tool/result.meta**（卡片读它）
-  const metaScan = readSessionEvents(DSH_HOME);
+  const metaScan = readSessionEvents(DSH_HOME, sessionsBefore);
   const healthMeta = metaScan.records.find((r) => r.type === 'tool/result' && r.data?.meta?.kind === 'health')?.data?.meta ?? null;
   check(
     "④' presentationMeta 落进 tool/result.meta（卡片的数据来源）",
     metaScan.skipped || (Boolean(healthMeta) && healthMeta.actions === EXPECTED_ACTIONS && healthMeta.apiRev === 2),
     metaScan.skipped ? '当前 Node 没有内置 zstd 解压 → 本项跳过（⑨ 有同通道断言）' : JSON.stringify(healthMeta),
+  );
+  // ④‴ 健康卡 meta 里也带宿主缝：设置节/卡片读的是 meta，不是工具文本
+  check(
+    "④‴ 健康卡 meta 里带宿主缝（面板设置节读它）",
+    metaScan.skipped || (typeof healthMeta?.hostSeam === 'string' && healthMeta.hostSeam.length > 0),
+    metaScan.skipped ? '（同上，跳过）' : `keys=${Object.keys(healthMeta ?? {}).join(',')}｜hostSeam=${String(healthMeta?.hostSeam ?? null)}`,
   );
 
   // ⑧⑨ 写操作：无审批通道必须**不落地**（fail-closed）；显式放行后必须**真写得进去**
@@ -2280,6 +2364,8 @@ async function checkDsh() {
     return { found, out, code };
   };
 
+  // 下面两条要读本次「放行 / 拦下」两次会话写的 meta；同样得圈范围（DSH_HOME 可能是用户真实 home）
+  const sessionsBeforeWrites = snapshotSessions(DSH_HOME);
   const negative = await soloWriteRun({ approve: null, title: 'verify 不应该写进去的想法' });
   if (process.env.SHOW_HEADLESS === '1') console.log('[headless 原文]', negative.out.slice(-1500));
   const blocked = /requires approval|no approval channel|deny|拒绝/i.test(negative.out);
@@ -2297,7 +2383,7 @@ async function checkDsh() {
   );
 
   // ⑨' 写工具的 presentationMeta 同样要落进会话日志（客户端就是靠它画想法卡的，而不是解析文本）
-  const ideaRecords = readSessionEvents(DSH_HOME).records.filter((r) => r.type === 'tool/result' && r.data?.meta?.kind === 'idea');
+  const ideaRecords = readSessionEvents(DSH_HOME, sessionsBeforeWrites).records.filter((r) => r.type === 'tool/result' && r.data?.meta?.kind === 'idea');
   const ideaMeta = ideaRecords.find((r) => /放行/.test(String(r.data.meta.title ?? '')))?.data.meta ?? null;
   check(
     "⑨' 写操作的 meta（想法卡数据）落进 tool/result.meta",
