@@ -688,6 +688,7 @@ export function makeHostSessionSeam(ctx) {
     }
     return '';
   };
+  const inFlightSessions = new Set();
 
   return {
     hasLiveAgent(sessionId) {
@@ -698,6 +699,7 @@ export function makeHostSessionSeam(ctx) {
     },
     agentStatus(sessionId) {
       if (!sessionId) return null;
+      if (inFlightSessions.has(sessionId)) return 'running';
       const agents = getAgents();
       const agent = agents?.get?.(sessionId);
       if (!agent) return null;
@@ -728,7 +730,7 @@ export function makeHostSessionSeam(ctx) {
       if (!agent) {
         return { ok: false, text: '', error: `session "${sessionId}" is not live in host` };
       }
-      if (agent.status === 'running') {
+      if (agent.status === 'running' || inFlightSessions.has(sessionId)) {
         return {
           ok: false,
           text: '',
@@ -736,6 +738,7 @@ export function makeHostSessionSeam(ctx) {
           error: `session "${sessionId}" is already owned by an active write handle (running in DSH GUI)`,
         };
       }
+      inFlightSessions.add(sessionId);
 
       const emitLine = (obj) => {
         try {
@@ -866,6 +869,14 @@ export function makeHostSessionSeam(ctx) {
       } catch (err) {
         return { ok: false, text: (finalMsgText || turnText).trim(), error: String(err?.message ?? err) };
       } finally {
+        inFlightSessions.delete(sessionId);
+        try {
+          if (agent.session && typeof ctx?.sessions?.flush === 'function') {
+            await ctx.sessions.flush(agent.session);
+          }
+        } catch {
+          /* ignore */
+        }
         try {
           unsub?.();
         } catch {
