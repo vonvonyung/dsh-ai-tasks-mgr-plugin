@@ -1554,14 +1554,27 @@ async function checkTools() {
         };
       },
     };
+    /* 假 ctx 照真机的规矩来：`tools` 是 inject 声明过的（属性访问合法），而 `subprocess` 这类
+       **没 inject** 的服务只能经 `ctx.get()` 拿 —— 真机上写属性访问会抛
+       `cannot get property "X" without inject`（cordis 里服务只存在「提供它的那个加载条目 fiber」内，
+       与本插件是兄弟，见 dsh-plugin/index.js 的 hostService 注释）。所以这里给 subprocess 装一个
+       **会抛** 的 getter：插件必须走 ctx.get，否则下面那条「真任务的进程从假缝里出去」就会红。 */
     const fakeCtx = {
       tools: { register: (t) => { tools.set(t.name, t); } },
       effect,
       on: () => () => {},
       inject: () => {},
       logger: { info: () => {} },
-      subprocess: fakeSubprocess, // ← 子进程接缝：插件应该把它递给内核
+      get(name) {
+        return name === 'subprocess' ? fakeSubprocess : null;
+      },
     };
+    Object.defineProperty(fakeCtx, 'subprocess', {
+      get() {
+        throw new Error('cannot get property "subprocess" without inject');
+      },
+      configurable: true,
+    });
     host = await import(`${pathToFileURL(path.join(ROOT, 'index.js')).href}?tools=${String(Date.now())}`);
     host.apply(fakeCtx);
 
@@ -1792,10 +1805,12 @@ async function checkTools() {
 
     const noSvc = HH.pickHostSpawn({});
     check('没有 ctx.subprocess 时退回内核自带 spawn（说得出为什么）', noSvc.spawn === null && /没提供/.test(String(noSvc.why)), String(noSvc.why));
-    const offSvc = HH.pickHostSpawn({ subprocess: fakeSubprocess });
+    // 真机上服务只能经 ctx.get 拿到（属性访问会抛），假 ctx 也照这个规矩来
+    const svcCtx = (name, svc) => ({ get: (n) => (n === name ? svc : null) });
+    const offSvc = HH.pickHostSpawn(svcCtx('subprocess', fakeSubprocess));
     check('有 ctx.subprocess 时选宿主那条缝', typeof offSvc.spawn === 'function' && offSvc.why === null);
     process.env.AITM_SUBPROCESS = '0';
-    const offSwitch = HH.pickHostSpawn({ subprocess: fakeSubprocess });
+    const offSwitch = HH.pickHostSpawn(svcCtx('subprocess', fakeSubprocess));
     check('逃生开关 AITM_SUBPROCESS=0 → 仍走内核自带 spawn', offSwitch.spawn === null && /AITM_SUBPROCESS/.test(String(offSwitch.why)), String(offSwitch.why));
     delete process.env.AITM_SUBPROCESS;
 
@@ -1893,11 +1908,17 @@ async function checkTools() {
     );
 
     /* ---- DSH 宿主会话接缝（P1 observeSession 只读镜像 + P2 runLiveTurn 进程内借道）---- */
-    check('宿主半边导出会话接缝钩子（makeHostSessionSeam / pickHostSession）', Boolean(HH?.makeHostSessionSeam && HH?.pickHostSession));
+    check('宿主半边导出会话接缝钩子（makeHostSessionSeam / pickHostSession / hostService）', Boolean(HH?.makeHostSessionSeam && HH?.pickHostSession && HH?.hostService));
     const observedCalls = [];
     const followupCalls = [];
     const sessionListeners = [];
-    const fakeSessionCtx = {
+    const sessionFlushCalls = [];
+    /* 假 ctx 必须照真机的规矩来：宿主服务由**别的加载条目 fiber**提供，本插件只 inject 了 tools，
+       于是 `ctx.agents` 这种属性访问在真机上会抛「cannot get property "X" without inject」，
+       只有 `ctx.get('agents')` 拿得到（见 dsh-plugin/index.js 的 hostService 注释）。
+       以前这里是个「什么都有」的普通对象，比真机宽松，正好把 0.3.0 那个「属性访问一律拿到 null」
+       的真机事故放过去了 —— 所以下面把属性访问一律做成会抛。 */
+    const serviceTable = {
       agents: {
         get(sid) {
           if (sid !== 'session-live-verify') return null;
@@ -1922,6 +1943,16 @@ async function checkTools() {
           return { sessionId: sid, cursor: 5, source: 'live', events: [] };
         },
       },
+      sessions: {
+        async flush(session) {
+          sessionFlushCalls.push(session);
+        },
+      },
+    };
+    const fakeSessionCtx = {
+      get(name) {
+        return serviceTable[name] ?? null;
+      },
       on(evName, cb) {
         if (evName === 'session/event') sessionListeners.push(cb);
         return () => {
@@ -1930,6 +1961,27 @@ async function checkTools() {
         };
       },
     };
+    for (const name of Object.keys(serviceTable)) {
+      Object.defineProperty(fakeSessionCtx, name, {
+        get() {
+          throw new Error(`cannot get property "${name}" without inject`);
+        },
+        configurable: true,
+      });
+    }
+    let fakePropThrew = false;
+    try {
+      void fakeSessionCtx.agents;
+    } catch {
+      fakePropThrew = true;
+    }
+    check(
+      '宿主服务只经 ctx.get 取：假 ctx 的属性访问会抛（真机同款），hostService 仍拿得到、拿不到的服务给 null',
+      fakePropThrew &&
+        HH.hostService(fakeSessionCtx, 'agents') === serviceTable.agents &&
+        HH.hostService(fakeSessionCtx, 'subprocess') === null &&
+        HH.hostService({}, 'agents') === null,
+    );
     const hs = HH.makeHostSessionSeam(fakeSessionCtx);
     check(
       '会话接缝：hasLiveAgent / agentStatus 准确反映宿主 ctx.agents 状态',
@@ -1960,6 +2012,11 @@ async function checkTools() {
         liveLines.some((x) => x.type === 'session' && x.sessionId === 'session-live-verify') &&
         liveLines.some((x) => x.type === 'final' && x.text === '进程内借道回复'),
       `ok=${String(liveRes?.ok)} lines=${String(liveLines.length)}`,
+    );
+    check(
+      '会话接缝（P2）：借道收尾的 sessions.flush 也经 ctx.get 拿到（不是属性访问）',
+      sessionFlushCalls.length === 1 && sessionFlushCalls[0]?.cwd === '/tmp/wt',
+      `flush=${String(sessionFlushCalls.length)}`,
     );
 
   } finally {

@@ -634,18 +634,37 @@ export function makeSubprocessSpawner(subprocess) {
 }
 
 /**
+ * 取一个宿主服务。**必须走 `ctx.get()`，不能写 `ctx.sessionQuery` 这种属性访问**。
+ *
+ * 为什么：cordis 里每个加载条目各起一个 fiber（`cordis-plugin-loader` 对每行配置调一次
+ * `registry.plugin`），服务只存在「提供它的那个条目的 fiber」里，与本插件是**兄弟**关系；
+ * 本插件只 `inject = ['tools']`，于是属性访问会抛
+ * `cannot get property "X" without inject`。而 `ctx.get(name)` 走 reflect 的**共享 store**，
+ * 不受兄弟关系限制 —— 这正是 DSH 自己的写法（base 清单里的 `ctx.get('profileContext')`、
+ * `dsh-session-log-export` 里的 `ctx.get("sessionQuery")`）。
+ *
+ * 真机事故（0.3.0）：`ctx.subprocess` / `ctx.agents` / `ctx.sessionQuery` 全用属性访问取，
+ * 一律拿到 null —— 插件自检行如实写着「宿主没提供 ctx.subprocess」，P1 只读镜像与 P2
+ * 进程内借道在真机上**全程静默失效**（复盘见 docs/DESIGN-NOTES.md §7.10）。
+ * 也别改成往 `inject` 里加：任一服务缺失会让插件一直 pending（白屏那类故障）。
+ */
+export function hostService(ctx, name) {
+  try {
+    const svc = ctx?.get?.(name);
+    return svc ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 选一条子进程缝（内核启动时用）。
  * 退回内核自带 spawn 的两种情况：`AITM_SUBPROCESS=0`（逃生开关）、宿主没提供 ctx.subprocess
  * （老 DSH / 精简 profile）。**退回不是错误**：内核照旧自己起进程，只是不由宿主托管。
  */
 export function pickHostSpawn(ctx) {
   if (process.env.AITM_SUBPROCESS === '0') return { spawn: null, why: 'AITM_SUBPROCESS=0' };
-  let svc = null;
-  try {
-    svc = ctx?.subprocess ?? null;
-  } catch {
-    svc = null; // cordis 里服务还没被提供时读它会炸 —— 当作没有
-  }
+  const svc = hostService(ctx, 'subprocess');
   if (!svc || typeof svc.spawn !== 'function') return { spawn: null, why: '宿主没提供 ctx.subprocess' };
   return { spawn: makeSubprocessSpawner(svc), why: null };
 }
@@ -660,20 +679,8 @@ export function pickHostSpawn(ctx) {
  *      `dsh headless --json` 同构的 NDJSON 行喂给 CLI 解析器，避免子进程 `SessionAlreadyOwnedError`。
  */
 export function makeHostSessionSeam(ctx) {
-  const getAgents = () => {
-    try {
-      return ctx?.agents ?? null;
-    } catch {
-      return null;
-    }
-  };
-  const getSessionQuery = () => {
-    try {
-      return ctx?.sessionQuery ?? null;
-    } catch {
-      return null;
-    }
-  };
+  const getAgents = () => hostService(ctx, 'agents');
+  const getSessionQuery = () => hostService(ctx, 'sessionQuery');
   const extractText = (raw) => {
     if (typeof raw === 'string') return raw;
     if (Array.isArray(raw)) {
@@ -871,8 +878,9 @@ export function makeHostSessionSeam(ctx) {
       } finally {
         inFlightSessions.delete(sessionId);
         try {
-          if (agent.session && typeof ctx?.sessions?.flush === 'function') {
-            await ctx.sessions.flush(agent.session);
+          const sessions = hostService(ctx, 'sessions');
+          if (agent.session && typeof sessions?.flush === 'function') {
+            await sessions.flush(agent.session);
           }
         } catch {
           /* ignore */
@@ -1078,7 +1086,7 @@ export async function ensureBase() {
 export { stop };
 
 /** 离线自检用的钩子（verify-dsh 拿假 subprocess / session 服务把适配层过一遍） */
-export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession };
+export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession, hostService };
 
 /** 诊断用：把「插件眼里的世界」原样抖出来（scripts/doctor.mjs 用；也让 verify 能断言自检逻辑） */
 export function diagnose() {

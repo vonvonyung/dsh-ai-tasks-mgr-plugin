@@ -377,8 +377,12 @@ node scripts/sync-plugin-repo.mjs             # 推（远端 plugin / 分支 mai
   将来沙箱执行器也挂在这条缝上。**两种例外**（都按老路走，内核自己 spawn）：
   ① Windows 上经 `cmd.exe` 转手的 `.cmd/.bat` 垫片 —— 那串参数按 Win32 引号规则定死、靠
   `windowsVerbatimArguments` 原样交给系统，而 DSH 的接缝是把 argv 交给 node 的 `spawn`，没有这个开关
-  （再被 node 引号一遍就成 `\"…\"`，cmd 不认）；② 宿主没提供 `ctx.subprocess`（老 DSH / 精简 profile）。
+  （再被 node 引号一遍就成 `\"…\"`，cmd 不认）；② 真拿不到 `ctx.subprocess`（老 DSH / 精简 profile）。
   想完全关掉这条缝：`AITM_SUBPROCESS=0`。日志/`doctor` 会说明当前走的是哪条。
+  **取宿主服务一律走 `ctx.get('名字')`，别写 `ctx.subprocess` 这种属性访问**：cordis 的服务由别的加载
+  条目 fiber 提供，与本插件是兄弟，没在 `inject` 里声明时属性访问会抛 `cannot get property … without inject`
+  而被 `try/catch` 吞成 null —— 2026-10-09 真机就是这样让 P1 只读镜像与 P2 进程内借道**整条静默失效**的
+  （自检日志原话：「宿主没提供 ctx.subprocess」）。详见 `docs/DESIGN-NOTES.md` §7.10。
 - 后端默认是**进程内 L3**（M2 第三步）：内核跑在 DSH 自己的进程里，只留一个回环端口给 iframe；
   **不再 spawn 常驻后端**（所以也没有「复用旧实例」「关不掉的孤儿进程」这两类问题了）。
   两条逃生通道：`AITM_URL=<地址>` 连外部实例（保留旧后端护栏）、`AITM_L3=0` 退回 M1 的 spawn 桥。
