@@ -650,6 +650,239 @@ export function pickHostSpawn(ctx) {
   return { spawn: makeSubprocessSpawner(svc), why: null };
 }
 
+/**
+ * 把 DSH 宿主的 `ctx.agents` + `ctx.sessionQuery` + `ctx.on('session/event')` 适配成内核的 `HostSessionSeam`
+ * （见 `src/core/exec.ts`）：
+ *   ① P1 只读镜像：用 `ctx.sessionQuery.observeSession(id, { projectionMode: 'none' })` 读会话事件，
+ *      **绝不**调 `follow` / `promote` / `agents.resume`，因此绝不会激活冷会话或抢走单写者锁；
+ *   ② P2 进程内借道投递：当 `sessionId` 已在 `ctx.agents` 存活（左栏打开过而持有写锁）时，
+ *      直接在进程内调 `agent.followup(prompt, { rpcId })` 并把 `session/event` 实时转成与
+ *      `dsh headless --json` 同构的 NDJSON 行喂给 CLI 解析器，避免子进程 `SessionAlreadyOwnedError`。
+ */
+export function makeHostSessionSeam(ctx) {
+  const getAgents = () => {
+    try {
+      return ctx?.agents ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const getSessionQuery = () => {
+    try {
+      return ctx?.sessionQuery ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const extractText = (raw) => {
+    if (typeof raw === 'string') return raw;
+    if (Array.isArray(raw)) {
+      return raw
+        .map((p) => (typeof p === 'string' ? p : p && typeof p.text === 'string' ? p.text : ''))
+        .filter(Boolean)
+        .join('\n');
+    }
+    if (raw && typeof raw === 'object') {
+      if (typeof raw.content === 'string' || Array.isArray(raw.content)) return extractText(raw.content);
+      if (typeof raw.text === 'string') return raw.text;
+    }
+    return '';
+  };
+
+  return {
+    hasLiveAgent(sessionId) {
+      if (!sessionId) return false;
+      const agents = getAgents();
+      if (!agents || typeof agents.get !== 'function') return false;
+      return Boolean(agents.get(sessionId));
+    },
+    agentStatus(sessionId) {
+      if (!sessionId) return null;
+      const agents = getAgents();
+      const agent = agents?.get?.(sessionId);
+      if (!agent) return null;
+      return agent.status === 'running' ? 'running' : 'idle';
+    },
+    async observeSession(sessionId, afterSeq = -1) {
+      if (!sessionId) return null;
+      const sq = getSessionQuery();
+      if (!sq || typeof sq.observeSession !== 'function') return null;
+      return await sq.observeSession(sessionId, {
+        afterSeq: typeof afterSeq === 'number' ? afterSeq : -1,
+        projectionMode: 'none',
+      });
+    },
+    onSessionEvent(listener) {
+      if (typeof ctx?.on !== 'function') return () => {};
+      return ctx.on('session/event', (sid, ev) => {
+        try {
+          listener(sid, ev);
+        } catch {
+          /* 监听器异常不外溢到宿主事件总线 */
+        }
+      });
+    },
+    async runLiveTurn({ sessionId, prompt, cwd, signal, rpcId, onLine }) {
+      const agents = getAgents();
+      const agent = agents?.get?.(sessionId);
+      if (!agent) {
+        return { ok: false, text: '', error: `session "${sessionId}" is not live in host` };
+      }
+      if (agent.status === 'running') {
+        return {
+          ok: false,
+          text: '',
+          errorCode: 'writer-held',
+          error: `session "${sessionId}" is already owned by an active write handle (running in DSH GUI)`,
+        };
+      }
+
+      const emitLine = (obj) => {
+        try {
+          onLine?.(JSON.stringify(obj));
+        } catch {
+          /* ignore */
+        }
+      };
+      emitLine({ type: 'session', sessionId, cwd: agent.session?.cwd ?? cwd });
+
+      let turnText = '';
+      let finalMsgText = '';
+      let turnErr = null;
+      let turnDoneResolve = null;
+      const turnDone = new Promise((resolve) => {
+        turnDoneResolve = resolve;
+      });
+
+      const unsub =
+        typeof ctx?.on === 'function'
+          ? ctx.on('session/event', (sid, ev) => {
+              if (sid !== sessionId || !ev) return;
+              const d = ev.data ?? {};
+              switch (ev.type) {
+                case 'turn/start':
+                  emitLine({ type: 'status', phase: 'turn_start', turn: d.turn ?? 1 });
+                  break;
+                case 'step/start':
+                  emitLine({ type: 'status', phase: 'step_start', turn: d.turn ?? 1, step: d.step ?? 1 });
+                  break;
+                case 'step/end':
+                  emitLine({
+                    type: 'status',
+                    phase: 'step_end',
+                    turn: d.turn ?? 1,
+                    step: d.step ?? 1,
+                    ...(d.usage ? { usage: d.usage } : {}),
+                  });
+                  break;
+                case 'assistant/thinking':
+                case 'thinking': {
+                  const t = extractText(d.text ?? d.content ?? d);
+                  if (t) emitLine({ type: 'thinking', text: t });
+                  break;
+                }
+                case 'assistant/text':
+                case 'assistant/delta':
+                case 'text': {
+                  const t = extractText(d.text ?? d.delta ?? d.content ?? d);
+                  if (t) {
+                    turnText += t;
+                    emitLine({ type: 'text', text: t });
+                  }
+                  break;
+                }
+                case 'assistant/message': {
+                  const t = extractText(d.content ?? d.message ?? d.text ?? d);
+                  if (t) finalMsgText = t;
+                  break;
+                }
+                case 'tool/call':
+                case 'tool_call':
+                  emitLine({
+                    type: 'tool_call',
+                    callId: d.callId ?? d.id ?? 'call',
+                    tool: d.tool ?? d.name ?? 'tool',
+                    input: d.input ?? d.args ?? {},
+                  });
+                  break;
+                case 'tool/result':
+                case 'tool_result':
+                  emitLine({
+                    type: 'tool_result',
+                    callId: d.callId ?? d.id ?? 'call',
+                    status: d.status === 'error' || d.isError ? 'error' : 'completed',
+                    result: d.result ?? d.content ?? '',
+                  });
+                  break;
+                case 'turn/end':
+                  if (d.status === 'failed' || d.status === 'error') {
+                    turnErr = String(d.error ?? d.message ?? 'turn failed');
+                  }
+                  emitLine({ type: 'status', phase: 'turn_end', turn: d.turn ?? 1 });
+                  turnDoneResolve?.();
+                  break;
+              }
+            })
+          : () => {};
+
+      const onAbort = () => {
+        try {
+          if (typeof agent.abort === 'function') agent.abort();
+          else if (typeof agent.cancel === 'function') agent.cancel();
+        } catch {
+          /* ignore */
+        }
+        turnDoneResolve?.();
+      };
+      signal?.addEventListener?.('abort', onAbort, { once: true });
+
+      try {
+        const tagRpcId = rpcId || `aitm:${Date.now()}`;
+        let followupRet = null;
+        if (typeof agent.followup === 'function') {
+          followupRet = await agent.followup(prompt, { rpcId: tagRpcId });
+        } else if (agent.inbox && typeof agent.inbox.enqueue === 'function') {
+          followupRet = await agent.inbox.enqueue({
+            kind: 'followup',
+            content: prompt,
+            source: { kind: 'user', rpcId: tagRpcId },
+          });
+        } else {
+          return { ok: false, text: '', error: `live agent for "${sessionId}" does not support followup/inbox` };
+        }
+        if (typeof ctx?.on === 'function') {
+          await Promise.race([turnDone, new Promise((r) => setTimeout(r, 50))]);
+          while (agent.status === 'running' && !signal?.aborted) {
+            await Promise.race([turnDone, new Promise((r) => setTimeout(r, 100))]);
+          }
+        }
+        if (followupRet && typeof followupRet === 'object' && typeof followupRet.text === 'string' && !finalMsgText) {
+          finalMsgText = followupRet.text;
+        }
+        const finalOut = (finalMsgText || turnText).trim();
+        if (finalOut) emitLine({ type: 'final', text: finalOut });
+        if (turnErr) return { ok: false, text: finalOut, error: turnErr };
+        return { ok: true, text: finalOut };
+      } catch (err) {
+        return { ok: false, text: (finalMsgText || turnText).trim(), error: String(err?.message ?? err) };
+      } finally {
+        try {
+          unsub?.();
+        } catch {
+          /* ignore */
+        }
+        signal?.removeEventListener?.('abort', onAbort);
+      }
+    },
+  };
+}
+
+export function pickHostSession(ctx) {
+  if (process.env.AITM_HOST_SESSION === '0') return { hostSession: null, why: 'AITM_HOST_SESSION=0' };
+  if (!ctx) return { hostSession: null, why: 'no ctx' };
+  return { hostSession: makeHostSessionSeam(ctx), why: null };
+}
+
 /** 调一个 action：进程内 L3 直连内核；外部后端（AITM_URL）/旧桥走 POST /api/<action> */
 async function call(action, payload = {}) {
   const base = await ensureBase();
@@ -719,8 +952,9 @@ export async function ensureBase() {
         );
       }
 
-      // 子进程接缝：**每次起内核时现选**（服务可能是后提供的，别在 apply 时把结论钉死）
+      // 子进程接缝与宿主会话接缝：**每次起内核时现选**（服务可能是后提供的，别在 apply 时把结论钉死）
       const seam = pickHostSpawn(state.ctx);
+      const sessionSeam = pickHostSession(state.ctx);
       const l3 = await mod.createL3({
         // 数据目录：AI_TASKS_HOME 优先；仓库模式下用仓库里的 .aitasks（Windows 真机上那份数据就在仓库内，
         // 用户不用多设任何变量），自带内核模式没有仓库可言 → 用 ~/.ai-tasks-mgr（和 Electron 回退口径一致）
@@ -733,6 +967,8 @@ export async function ensureBase() {
         version: pluginVersion(),
         // 有 ctx.subprocess 就把 CLI 引擎起的进程交给宿主托管；没有就 null（内核自己 spawn）
         spawn: seam.spawn,
+        // 有 ctx.agents / ctx.sessionQuery 就打通 P1 只读镜像 + P2 进程内借道投递
+        hostSession: sessionSeam.hostSession,
       });
       const h = await l3.health();
       if (!compatible(h)) throw incompatibleError(l3.base, h, vendored ? '自带内核' : '进程内 L3');

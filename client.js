@@ -277,8 +277,10 @@ window.__ModuleLoader__.load({
       'board.moveTo': '改状态：',
       'board.tasks': '任务（点「继续」在原 worktree 上接着干；「重试」＝同指令新起一条）',
       'board.taskFollow': '继续',
+      'board.taskRetryTurn': '重试本轮',
       'board.taskRetry': '重试',
       'board.taskFollowHint': '接着干：在这个任务的 worktree 上追加一条指令（同一会话继续）',
+      'board.taskRetryTurnHint': '重试本轮：复用当前任务同一 worktree 与会话，原位重发末尾尚未收到回复的用户指令（不新开分支）',
       'board.taskRetryHint': '重试：用同样的指令**新起一条任务**（新 worktree，从基线开始；旧现场保留）',
       'board.taskSend': '发送',
       'board.taskCancel': '取消',
@@ -510,8 +512,10 @@ window.__ModuleLoader__.load({
       'board.moveTo': 'Move to:',
       'board.tasks': 'Tasks（Continue = keep working in the same worktree; Retry = new task with the same instruction）',
       'board.taskFollow': 'Continue',
+      'board.taskRetryTurn': 'Retry Turn',
       'board.taskRetry': 'Retry',
       'board.taskFollowHint': 'Continue: append an instruction to this task (same worktree, same session)',
+      'board.taskRetryTurnHint': 'Retry Turn: reuse the same worktree and session to resend the last unanswered instruction in place',
       'board.taskRetryHint': 'Retry: start a NEW task with the same instruction (new worktree from base; the old one is kept)',
       'board.taskSend': 'Send',
       'board.taskCancel': 'Cancel',
@@ -1365,8 +1369,9 @@ window.__ModuleLoader__.load({
      * - **重试**（`task.retry`）：用同样的指令**新起一条任务**（新 worktree、从基线开始；旧现场保留）。
      * - 正在跑的任务（queued/running/waiting_input）不给这两个按钮（内核也会拒），只写「进行中」。
      */
-    function BoardTaskRow({ x, t, editing, text, onToggleEditor, onText, onSend, onRetry }) {
+    function BoardTaskRow({ x, t, editing, text, onToggleEditor, onText, onSend, onRetry, onRetryTurn }) {
       const active = ['queued', 'running', 'waiting_input'].includes(String(x.status));
+      const canRetryTurn = Boolean(onRetryTurn && (x.retryable || x.errorCode === 'writer-held' || x.status === 'failed'));
       return jsx.jsxs('div', { style: { borderTop: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.18))', padding: '5px 2px' }, 'data-task-row': x.id, children: [
         jsx.jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }, children: [
           taskStatusChip(x.status, t),
@@ -1375,6 +1380,16 @@ window.__ModuleLoader__.load({
           active
             ? jsx.jsx('span', { style: { opacity: 0.7, marginLeft: 'auto' }, children: t('board.taskActive') }, 'act')
             : jsx.jsxs('span', { style: { marginLeft: 'auto', display: 'flex', gap: 4 }, children: [
+                canRetryTurn
+                  ? jsx.jsx('button', {
+                      type: 'button',
+                      style: BOARD.chip(),
+                      title: t('board.taskRetryTurnHint'),
+                      'data-task-retry-turn': '1',
+                      onClick: onRetryTurn,
+                      children: t('board.taskRetryTurn'),
+                    }, 'retry-turn')
+                  : null,
                 jsx.jsx('button', {
                   type: 'button',
                   style: BOARD.chip(),
@@ -1664,6 +1679,19 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const retryCurrentTurn = async (taskId) => {
+        setTaskNote(null);
+        try {
+          await postAction(base, 'task.followUp', { taskId, instruction: '', retryTurn: true });
+          setTaskAct(null);
+          setTaskNote(t('board.taskQueued'));
+          if (detail) await openDetail(detail.id);
+          await load();
+        } catch (err) {
+          setTaskNote(String(err?.message ?? err));
+        }
+      };
+
       const toggleStar = async (id) => {
         try {
           await postAction(base, 'idea.toggleStar', id);
@@ -1755,6 +1783,7 @@ window.__ModuleLoader__.load({
                     onText: (v) => setTaskAct((a) => (a ? { ...a, text: v } : { taskId: x.id, text: v })),
                     onSend: () => void followTask(x.id),
                     onRetry: () => void retryTask(x.id),
+                    onRetryTurn: () => void retryCurrentTurn(x.id),
                   },
                   String(x.id),
                 ),
@@ -1846,6 +1875,9 @@ window.__ModuleLoader__.load({
           status: x.status,
           turns: x.turns ?? 0,
           ...(x.error ? { error: String(x.error) } : {}),
+          ...(x.errorCode ? { errorCode: String(x.errorCode) } : {}),
+          ...(x.retryable ? { retryable: true } : {}),
+          ...(x.sessionId ? { sessionId: String(x.sessionId) } : {}),
           ...(x.verify ? { verify: { ok: x.verify.ok === true, note: String(x.verify.note ?? '') } } : {}),
           ...(x.workspace?.mergedAt ? { mergedAt: x.workspace.mergedAt } : {}),
           ...(x.workspace?.baseRef ? { baseRef: x.workspace.baseRef } : {}),
