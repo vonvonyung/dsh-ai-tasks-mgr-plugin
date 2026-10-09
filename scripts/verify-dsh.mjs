@@ -1892,6 +1892,76 @@ async function checkTools() {
       `argv=${JSON.stringify(fakeSubprocess.calls[0]?.argv ?? [])}`,
     );
 
+    /* ---- DSH 宿主会话接缝（P1 observeSession 只读镜像 + P2 runLiveTurn 进程内借道）---- */
+    check('宿主半边导出会话接缝钩子（makeHostSessionSeam / pickHostSession）', Boolean(HH?.makeHostSessionSeam && HH?.pickHostSession));
+    const observedCalls = [];
+    const followupCalls = [];
+    const sessionListeners = [];
+    const fakeSessionCtx = {
+      agents: {
+        get(sid) {
+          if (sid !== 'session-live-verify') return null;
+          return {
+            status: 'idle',
+            session: { cwd: '/tmp/wt' },
+            async followup(prompt, opts) {
+              followupCalls.push({ prompt, opts });
+              for (const fn of sessionListeners) {
+                fn('session-live-verify', { seq: 11, type: 'turn/start', data: { turn: 2 } });
+                fn('session-live-verify', { seq: 12, type: 'assistant/text', data: { text: '进程内借道回复' } });
+                fn('session-live-verify', { seq: 13, type: 'turn/end', data: { turn: 2, status: 'completed' } });
+              }
+              return { text: '进程内借道回复' };
+            },
+          };
+        },
+      },
+      sessionQuery: {
+        async observeSession(sid, opts) {
+          observedCalls.push({ sid, opts });
+          return { sessionId: sid, cursor: 5, source: 'live', events: [] };
+        },
+      },
+      on(evName, cb) {
+        if (evName === 'session/event') sessionListeners.push(cb);
+        return () => {
+          const idx = sessionListeners.indexOf(cb);
+          if (idx >= 0) sessionListeners.splice(idx, 1);
+        };
+      },
+    };
+    const hs = HH.makeHostSessionSeam(fakeSessionCtx);
+    check(
+      '会话接缝：hasLiveAgent / agentStatus 准确反映宿主 ctx.agents 状态',
+      hs.hasLiveAgent('session-live-verify') === true && hs.hasLiveAgent('session-cold') === false && hs.agentStatus('session-live-verify') === 'idle',
+    );
+    await hs.observeSession('session-live-verify', 3);
+    check(
+      '会话接缝（P1）：observeSession 传 projectionMode=none 且不调 follow/promote（绝不抢写锁）',
+      observedCalls.length === 1 && observedCalls[0].sid === 'session-live-verify' && observedCalls[0].opts?.projectionMode === 'none' && observedCalls[0].opts?.afterSeq === 3,
+      JSON.stringify(observedCalls[0] ?? null),
+    );
+    const liveLines = [];
+    const liveRes = await hs.runLiveTurn({
+      sessionId: 'session-live-verify',
+      prompt: '增量指令',
+      cwd: '/tmp/wt',
+      signal: new AbortController().signal,
+      rpcId: 'aitm:t-verify:1',
+      onLine: (l) => liveLines.push(JSON.parse(l)),
+    });
+    check(
+      '会话接缝（P2）：runLiveTurn 调 agent.followup 并把 session/event 转成 dsh-json 行流（含 final）',
+      liveRes?.ok === true &&
+        liveRes?.text === '进程内借道回复' &&
+        followupCalls.length === 1 &&
+        followupCalls[0].prompt === '增量指令' &&
+        followupCalls[0].opts?.rpcId === 'aitm:t-verify:1' &&
+        liveLines.some((x) => x.type === 'session' && x.sessionId === 'session-live-verify') &&
+        liveLines.some((x) => x.type === 'final' && x.text === '进程内借道回复'),
+      `ok=${String(liveRes?.ok)} lines=${String(liveLines.length)}`,
+    );
+
   } finally {
     await host?.stop?.().catch?.(() => undefined);
     if (savedHome === undefined) delete process.env.AI_TASKS_HOME;

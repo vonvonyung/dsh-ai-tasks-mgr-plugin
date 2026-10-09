@@ -1066,8 +1066,8 @@ export async function ensureBase() {
 
 export { stop };
 
-/** 离线自检用的钩子（verify-dsh 拿假 subprocess 服务把适配层过一遍） */
-export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn };
+/** 离线自检用的钩子（verify-dsh 拿假 subprocess / session 服务把适配层过一遍） */
+export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession };
 
 /** 诊断用：把「插件眼里的世界」原样抖出来（scripts/doctor.mjs 用；也让 verify 能断言自检逻辑） */
 export function diagnose() {
