@@ -923,7 +923,7 @@ async function checkRender() {
       // 内核的想法状态清单直接从 `src/shared/labels.ts` 对表（分发场景只有插件包 ⇒ 退回固定清单）
       const labelsPath = path.join(ROOT, '..', 'src', 'shared', 'labels.ts');
       const wantIdea = (() => {
-        if (!fs.existsSync(labelsPath)) return ['inbox', 'scoping', 'ready', 'developing', 'review', 'blocked', 'done', 'archived'];
+        if (!fs.existsSync(labelsPath)) return ['inbox', 'scoping', 'ready', 'developing', 'review', 'blocked', 'done', 'archived', 'trash'];
         const mm = /export const IDEA_LABEL[^{]*{([\s\S]*?)\n};/.exec(fs.readFileSync(labelsPath, 'utf8'));
         return mm ? [...mm[1].matchAll(/(\w+):\s*'/g)].map((x) => x[1]) : [];
       })();

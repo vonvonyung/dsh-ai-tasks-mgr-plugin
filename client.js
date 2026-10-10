@@ -301,6 +301,7 @@ window.__ModuleLoader__.load({
       'board.col.blocked': '受阻',
       'board.col.done': '已完成',
       'board.col.archived': '已归档',
+      'board.col.trash': '回收站',
       // 验收（M3：原生看板里也能验收；写工具 aitm_task_accept 的卡片文案同源）
       'board.accept': '验收并合并',
       'board.acceptOnly': '只记验收',
@@ -536,6 +537,7 @@ window.__ModuleLoader__.load({
       'board.col.blocked': 'Blocked',
       'board.col.done': 'Done',
       'board.col.archived': 'Archived',
+      'board.col.trash': 'Trash',
       'board.accept': 'Accept & merge',
       'board.acceptOnly': 'Record only',
       'board.acceptAgain': 'Re-check (already merged)',
@@ -678,6 +680,7 @@ window.__ModuleLoader__.load({
       blocked: tone('err'),
       done: tone('ok'),
       archived: tone('muted'),
+      trash: tone('err'),
     };
 
     /**
