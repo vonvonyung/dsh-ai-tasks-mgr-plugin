@@ -68,7 +68,10 @@ const RENDERER_DIST = () => path.join(DEFAULTS.repo, 'dist');
  * `npm pack` 会一起打进 tarball（见 package.json 的 `files`）。
  */
 const VENDOR_L3 = () => path.join(PLUGIN_DIR, 'dist-server', 'l3.mjs');
-const VENDOR_DIST = () => path.join(PLUGIN_DIR, 'dist');
+const VENDOR_DIST = () =>
+  exists(path.join(PLUGIN_DIR, 'dist', 'index.html'))
+    ? path.join(PLUGIN_DIR, 'dist')
+    : path.join(PLUGIN_DIR, 'panel');
 const vendorPresent = () => exists(VENDOR_L3());
 
 /** 插件自己的版本（agent 装机时要一个「插件 ↔ 内核 apiRev」的版本三元组） */

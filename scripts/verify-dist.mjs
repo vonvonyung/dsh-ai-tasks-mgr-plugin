@@ -196,9 +196,11 @@ async function main() {
     '见 verify-dist 里「别在 profile 里放第二份 dsh-tools」那段注释',
   );
   check(
-    'tarball 里有自带内核与面板产物',
-    fs.existsSync(path.join(pkgDir, 'dist-server', 'l3.mjs')) && fs.existsSync(path.join(pkgDir, 'dist', 'index.html')),
-    `${fs.readdirSync(path.join(pkgDir, 'dist', 'assets')).join(', ')}`,
+    'tarball 与 GitHub 插件仓均有自带内核与面板产物（dist-server/l3.mjs + panel/ + dist/）',
+    fs.existsSync(path.join(pkgDir, 'dist-server', 'l3.mjs')) &&
+      fs.existsSync(path.join(pkgDir, 'dist', 'index.html')) &&
+      fs.existsSync(path.join(pkgDir, 'panel', 'index.html')),
+    `${fs.readdirSync(path.join(pkgDir, 'panel', 'assets')).join(', ')}`,
   );
 
   /* ③④ 没有仓库的机器：起 web，看插件的后端来法 */

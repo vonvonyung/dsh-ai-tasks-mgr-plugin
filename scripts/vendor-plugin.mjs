@@ -81,49 +81,60 @@ function copyTree(from, to, { skipMaps = false } = {}) {
 }
 
 if (!ROOT) {
-  /* 独立仓库模式（插件被单独 checkout，没有 AI 任务台仓库）：
-     带内核的分发包**打不出来** —— 内核与面板产物都在母仓库里构建。
-     `--no-pack` 是 prepack 钩子走的路径（只是哄 npm pack 别报 MODULE_NOT_FOUND），
-     这种 tarball 只能当**开发包**用，所以放行但把话说在前面。 */
-  log('⚠ 没找到 AI 任务台仓库（母仓库）—— 这是**独立仓库模式**（插件单独 checkout）。');
-  log('  影响：这个 tarball **不含自带内核**（dist-server/l3.mjs）与面板产物，只适合开发/自测；');
-  log('        别人装它，插件会让他设 AITM_REPO 指向仓库，否则拉不起后端。');
-  log('  正式分发（带内核）：在母仓库里跑 node scripts/vendor-plugin.mjs');
-  if (noPack) {
-    log('  --no-pack（prepack 钩子，npm pack 走的这条）：放行，但记住上面这句 —— 这个包不含内核。');
-    process.exit(0);
+  /* 独立仓库模式（插件被单独 checkout，没有 AI 任务台母仓库）：
+     若仓库里已经随 git 带了 dist-server/l3.mjs 与 panel/（由 sync-plugin-repo.mjs 同步过来），
+     则顺手补一份 dist/（若不存在），直接支持从 GitHub 仓库地址安装或打包！ */
+  const selfL3 = path.join(PLUGIN, 'dist-server', 'l3.mjs');
+  const selfPanel = path.join(PLUGIN, 'panel', 'index.html');
+  const selfDist = path.join(PLUGIN, 'dist', 'index.html');
+  if (!fs.existsSync(selfDist) && fs.existsSync(selfPanel)) {
+    copyTree(path.join(PLUGIN, 'panel'), path.join(PLUGIN, 'dist'), { skipMaps: true });
   }
-  if (process.argv.includes('--skip-bundle')) {
-    log('  --skip-bundle：按你的要求继续（这个包不含内核）。');
-    process.exit(0);
-  }
-  log('  （确实只想打个不含内核的开发包：加 --skip-bundle）');
-  process.exit(1);
-}
-
-if (!skipBuild) {
-  log('构建仓库（npm run build）…');
-  npmRun(['run', 'build'], { cwd: ROOT, stdio: 'inherit' });
-} else {
-  log('--skip-build：直接用现有的 dist 产物');
-}
-
-const l3 = path.join(ROOT, 'dist-server', 'l3.mjs');
-const distIndex = path.join(ROOT, 'dist', 'index.html');
-for (const [what, file] of [['自带内核', l3], ['面板产物', distIndex]]) {
-  if (!fs.existsSync(file)) {
-    log(`✗ 缺${what}：${file} —— 先跑 node scripts/vendor-plugin.mjs（不带 --skip-build）`);
+  if (fs.existsSync(selfL3) && (fs.existsSync(selfPanel) || fs.existsSync(path.join(PLUGIN, 'dist', 'index.html')))) {
+    log('✓ 独立仓库模式：检测到包内已自带 dist-server/l3.mjs 与面板产物（panel/），可直接从 GitHub 安装运行。');
+    if (noPack) process.exit(0);
+  } else {
+    log('⚠ 没找到 AI 任务台仓库（母仓库），且当前独立仓库内还没有 dist-server/l3.mjs。');
+    log('  影响：这个 tarball **不含自带内核**（dist-server/l3.mjs）与面板产物，只适合开发/自测；');
+    log('        别人装它，插件会让他设 AITM_REPO 指向仓库，否则拉不起后端。');
+    log('  正式分发（带内核）：在母仓库里跑 node scripts/vendor-plugin.mjs 并同步到插件仓库');
+    if (noPack) {
+      log('  --no-pack（prepack 钩子，npm pack 走的这条）：放行，但记住上面这句 —— 这个包不含内核。');
+      process.exit(0);
+    }
+    if (process.argv.includes('--skip-bundle')) {
+      log('  --skip-bundle：按你的要求继续（这个包不含内核）。');
+      process.exit(0);
+    }
+    log('  （确实只想打个不含内核的开发包：加 --skip-bundle）');
     process.exit(1);
   }
-}
+} else {
+  if (!skipBuild) {
+    log('构建仓库（npm run build）…');
+    npmRun(['run', 'build'], { cwd: ROOT, stdio: 'inherit' });
+  } else {
+    log('--skip-build：直接用现有的 dist 产物');
+  }
 
-// 只带 l3.mjs —— 插件要的就是它；web.mjs/seed.mjs 是 CLI 入口，自带内核模式下用不到
-fs.rmSync(path.join(PLUGIN, 'dist-server'), { recursive: true, force: true });
-fs.mkdirSync(path.join(PLUGIN, 'dist-server'), { recursive: true });
-fs.copyFileSync(l3, path.join(PLUGIN, 'dist-server', 'l3.mjs'));
-const nL3 = 1;
-const nDist = copyTree(path.join(ROOT, 'dist'), path.join(PLUGIN, 'dist'), { skipMaps: true });
-log(`拷贝：dist-server ${nL3} 个文件 · dist ${nDist} 个文件 → dsh-plugin/`);
+  const l3 = path.join(ROOT, 'dist-server', 'l3.mjs');
+  const distIndex = path.join(ROOT, 'dist', 'index.html');
+  for (const [what, file] of [['自带内核', l3], ['面板产物', distIndex]]) {
+    if (!fs.existsSync(file)) {
+      log(`✗ 缺${what}：${file} —— 先跑 node scripts/vendor-plugin.mjs（不带 --skip-build）`);
+      process.exit(1);
+    }
+  }
+
+  // 只带 l3.mjs —— 插件要的就是它；web.mjs/seed.mjs 是 CLI 入口，自带内核模式下用不到
+  fs.rmSync(path.join(PLUGIN, 'dist-server'), { recursive: true, force: true });
+  fs.mkdirSync(path.join(PLUGIN, 'dist-server'), { recursive: true });
+  fs.copyFileSync(l3, path.join(PLUGIN, 'dist-server', 'l3.mjs'));
+  const nL3 = 1;
+  copyTree(path.join(ROOT, 'dist'), path.join(PLUGIN, 'panel'), { skipMaps: true });
+  const nDist = copyTree(path.join(ROOT, 'dist'), path.join(PLUGIN, 'dist'), { skipMaps: true });
+  log(`拷贝：dist-server ${nL3} 个文件 · panel/dist ${nDist} 个文件 → dsh-plugin/`);
+}
 
 // 拷贝完就核对「自带内核 + 面板产物」在不在（prepack 只跑到这就够了：内容检查放在 npm pack 之后）
 if (noPack) {

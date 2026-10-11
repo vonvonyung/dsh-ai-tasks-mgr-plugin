@@ -46,15 +46,31 @@
    | `AITM_SUBPROCESS` | `0` = **不让宿主托管 CLI 进程**（内核自己 spawn，退回老行为） | 空（有 `ctx.subprocess` 就交给宿主） |
    | `AITM_DEBUG` | `1` = 接住子进程日志（**会让 headless 不退出，只在手工调试时开**） | 空 |
 
-## 同事怎么装（分发版 · 一条命令）
+## 同事怎么装 / 直接从 GitHub 仓库地址安装（分发版 · 自带内核与面板）
 
-机器上**不需要** AI 任务台仓库：插件包里自带内核（`dist-server/l3.mjs`）与面板产物（`dist/`）。
+机器上**不需要** AI 任务台母仓库：插件仓库与 tarball 里均已**自带内核**（`dist-server/l3.mjs`）与**面板产物**（`panel/` / `dist/`），安装后自动走 `vendor` 模式启动进程内 L3 内核。
 
-1. **出包**（在你这边，仓库里跑；产物在 `release/`）：
+### 方式 A：在 DSH 中直接指向 GitHub 插件仓库安装（推荐）
+
+在 DSH Desktop 的「插件管理」中直接填入仓库地址，或在命令行执行：
+
+```bash
+# DSH Desktop（桌面版 profile）
+npx -y @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile desktop add https://github.com/vonvonyung/dsh-ai-tasks-mgr-plugin
+
+# DSH Web（浏览器版 profile）
+npx -y @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add https://github.com/vonvonyung/dsh-ai-tasks-mgr-plugin
+```
+
+> **维护者发版提示**：母仓库每次执行 `npm run build` 或 `npm run dsh:update`（`node scripts/vendor-plugin.mjs`）时，会自动将最新的 `dist-server/l3.mjs` 与 `panel/`（无 sourcemap）更新进 `dsh-plugin/`。提交母仓库后执行 `node scripts/sync-plugin-repo.mjs` 推送到 `vonvonyung/dsh-ai-tasks-mgr-plugin`，即可让所有通过 GitHub 地址安装的用户直接拿到最新自带内核与面板。
+
+### 方式 B：离线 `.tgz` 包安装
+
+1. **出包**（在母仓库里跑；产物在 `release/`）：
 
    ```bash
    node scripts/vendor-plugin.mjs        # 构建 + 拷内核/面板产物进 dsh-plugin/ + npm pack
-   # → release/dsh-plugin-aitm-0.3.1.tgz（脚本会核对包内容：缺内核/面板产物会直接报错）
+   # → release/dsh-plugin-aitm-0.3.47.tgz（脚本会核对包内容：缺内核/面板产物会直接报错）
    ```
 
 2. **同事那台机器**：

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- 加到主屏幕后以独立 App 形态启动（无浏览器地址栏 = 手机上的「真全屏」）；iOS 读 apple-* 系列 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="任务台" />
+    <title>AI 任务台</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon.png" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#0d1420" />
+    <!-- 先按上次的主题把底色涂好，再加载样式与包；classic script 会阻塞渲染，正是我们要的顺序 -->
+    <script src="./theme-boot.js"></script>
+    <script type="module" crossorigin src="./assets/index-CT2KAY-4.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-WwE0DFyR.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
