@@ -17,6 +17,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import zlib from 'node:zlib';
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
@@ -724,9 +725,167 @@ export function pickHostSpawn(ctx) {
  *      直接在进程内调 `agent.followup(prompt, { rpcId })` 并把 `session/event` 实时转成与
  *      `dsh headless --json` 同构的 NDJSON 行喂给 CLI 解析器，避免子进程 `SessionAlreadyOwnedError`。
  */
+export function repairDshSessionLogFile(logPath) {
+  try {
+    if (!logPath || !fs.existsSync(logPath)) return { repaired: false, fixedCount: 0 };
+    const raw = fs.readFileSync(logPath);
+    if (!raw || raw.length === 0) return { repaired: false, fixedCount: 0 };
+
+    const isValidUserMsg = (val) => {
+      if (typeof val !== 'object' || val === null || Array.isArray(val)) return false;
+      if (typeof val.id !== 'string' || !val.id.trim()) return false;
+      if (val.role !== 'user' || !Array.isArray(val.content)) return false;
+      if (typeof val.source !== 'object' || val.source === null || Array.isArray(val.source)) return false;
+      if (typeof val.source.kind !== 'string' || !val.source.kind.trim() || val.source.kind === 'plugin') return false;
+      return true;
+    };
+    const coerceUserMsg = (val) => {
+      if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+        const next = { ...val };
+        if (typeof next.id !== 'string' || !next.id.trim()) next.id = crypto.randomUUID();
+        next.role = 'user';
+        if (!Array.isArray(next.content)) {
+          const text = typeof next.text === 'string' ? next.text : typeof next.content === 'string' ? next.content : '';
+          next.content = [{ type: 'text', text }];
+        }
+        if (
+          typeof next.source !== 'object' ||
+          next.source === null ||
+          Array.isArray(next.source) ||
+          typeof next.source.kind !== 'string' ||
+          !next.source.kind.trim() ||
+          next.source.kind === 'plugin'
+        ) {
+          next.source = { kind: 'user' };
+        }
+        return next;
+      }
+      return {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text: String(val ?? '') }],
+        source: { kind: 'user' },
+      };
+    };
+    const repairText = (text) => {
+      let changed = false;
+      let fixedCount = 0;
+      const lines = text.split('\n').map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return line;
+        let parsed;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          return line;
+        }
+        if (!parsed || typeof parsed !== 'object') return line;
+        if (parsed.type === 'agent/inbox/spliced' && parsed.data && Array.isArray(parsed.data.inserted)) {
+          if (parsed.data.inserted.some((item) => !isValidUserMsg(item))) {
+            changed = true;
+            parsed.data.inserted = parsed.data.inserted.map((item) => {
+              if (isValidUserMsg(item)) return item;
+              fixedCount += 1;
+              return coerceUserMsg(item);
+            });
+            return JSON.stringify(parsed);
+          }
+        }
+        if (parsed.type === 'user/message' && !isValidUserMsg(parsed.data)) {
+          changed = true;
+          fixedCount += 1;
+          parsed.data = coerceUserMsg(parsed.data);
+          return JSON.stringify(parsed);
+        }
+        return line;
+      });
+      return { changed, fixedCount, text: lines.join('\n') };
+    };
+
+    if (!logPath.endsWith('.zstd')) {
+      const { changed, fixedCount, text } = repairText(raw.toString('utf8'));
+      if (!changed) return { repaired: false, fixedCount: 0 };
+      fs.writeFileSync(logPath, Buffer.from(text, 'utf8'));
+      return { repaired: true, fixedCount };
+    }
+
+    if (typeof zlib.zstdDecompressSync !== 'function' || typeof zlib.zstdCompressSync !== 'function') {
+      return { repaired: false, fixedCount: 0 };
+    }
+    const ZSTD_MAGIC = 0xfd2fb528;
+    const frames = [];
+    let offset = 0;
+    while (offset < raw.length) {
+      const start = offset;
+      if (raw.length - offset < 4) break;
+      if (raw.readUInt32LE(offset) !== ZSTD_MAGIC) break;
+      offset += 4;
+      if (offset === raw.length) break;
+      const desc = raw.readUInt8(offset);
+      offset += 1;
+      const fcsFlag = desc >>> 6;
+      const singleSeg = (desc & 0x20) !== 0;
+      const checksum = (desc & 0x04) !== 0;
+      const dictFlag = desc & 0x03;
+      const dictBytes = dictFlag === 3 ? 4 : dictFlag;
+      const fcsBytes = fcsFlag === 0 ? (singleSeg ? 1 : 0) : 1 << fcsFlag;
+      const remHeader = (singleSeg ? 0 : 1) + dictBytes + fcsBytes;
+      if (raw.length - offset < remHeader) break;
+      offset += remHeader;
+      let broken = false;
+      for (;;) {
+        if (raw.length - offset < 3) {
+          broken = true;
+          break;
+        }
+        const bh = raw.readUIntLE(offset, 3);
+        offset += 3;
+        const lastBlock = (bh & 1) !== 0;
+        const blockType = (bh >>> 1) & 3;
+        const blockSize = bh >>> 3;
+        const payload = blockType === 1 ? 1 : blockSize;
+        if (raw.length - offset < payload) {
+          broken = true;
+          break;
+        }
+        offset += payload;
+        if (lastBlock) break;
+      }
+      if (broken) break;
+      if (checksum) {
+        if (raw.length - offset < 4) break;
+        offset += 4;
+      }
+      frames.push({ start, end: offset });
+    }
+    if (frames.length === 0) return { repaired: false, fixedCount: 0 };
+    let anyChanged = false;
+    let totalFixed = 0;
+    const checksumFlag = zlib.constants?.ZSTD_c_checksumFlag;
+    const compressOpts = typeof checksumFlag === 'number' ? { params: { [checksumFlag]: 1 } } : undefined;
+    const outFrames = frames.map((f) => {
+      const slice = raw.subarray(f.start, f.end);
+      const decoded = zlib.zstdDecompressSync(slice).toString('utf8');
+      const { changed, fixedCount, text } = repairText(decoded);
+      if (!changed) return slice;
+      anyChanged = true;
+      totalFixed += fixedCount;
+      return compressOpts
+        ? zlib.zstdCompressSync(Buffer.from(text, 'utf8'), compressOpts)
+        : zlib.zstdCompressSync(Buffer.from(text, 'utf8'));
+    });
+    if (!anyChanged) return { repaired: false, fixedCount: 0 };
+    fs.writeFileSync(logPath, Buffer.concat(outFrames));
+    return { repaired: true, fixedCount: totalFixed };
+  } catch {
+    return { repaired: false, fixedCount: 0 };
+  }
+}
+
 export function makeHostSessionSeam(ctx) {
   const getAgents = () => hostService(ctx, 'agents');
   const getSessionQuery = () => hostService(ctx, 'sessionQuery');
+  const getAttachments = () => hostService(ctx, 'attachments');
   const extractText = (raw) => {
     if (typeof raw === 'string') return raw;
     if (Array.isArray(raw)) {
@@ -740,6 +899,55 @@ export function makeHostSessionSeam(ctx) {
       if (typeof raw.text === 'string') return raw.text;
     }
     return '';
+  };
+  const enrichEventImages = async (events, afterSeq) => {
+    const attachments = getAttachments();
+    if (!attachments || !Array.isArray(events)) return events;
+    const out = [];
+    for (const ev of events) {
+      if (!ev || typeof ev !== 'object' || (typeof ev.seq === 'number' && ev.seq <= afterSeq)) {
+        out.push(ev);
+        continue;
+      }
+      const data = ev.data;
+      const content =
+        ev.type === 'user/message' && Array.isArray(data?.content)
+          ? data.content
+          : (ev.type === 'assistant/message' || ev.type === 'tool/result') && Array.isArray(data?.message?.content)
+            ? data.message.content
+            : null;
+      if (!content || !content.some((b) => b && b.type === 'image' && b.attachment?.attachmentId && !b.attachment.filePath && !b.attachment.data)) {
+        out.push(ev);
+        continue;
+      }
+      const enrichedBlocks = [];
+      for (const b of content) {
+        if (!b || b.type !== 'image' || !b.attachment?.attachmentId || b.attachment.filePath || b.attachment.data) {
+          enrichedBlocks.push(b);
+          continue;
+        }
+        let nextAtt = { ...b.attachment };
+        try {
+          if (typeof attachments.imageHostPath === 'function') {
+            const hp = attachments.imageHostPath(b.attachment);
+            if (typeof hp === 'string' && hp.trim()) nextAtt.filePath = hp.trim();
+          }
+          if (!nextAtt.filePath && typeof attachments.readImage === 'function') {
+            const stored = await attachments.readImage(b.attachment);
+            if (stored?.data) nextAtt.data = Buffer.from(stored.data).toString('base64');
+          }
+        } catch {
+          /* ignore */
+        }
+        enrichedBlocks.push({ ...b, attachment: nextAtt });
+      }
+      if (ev.type === 'user/message') {
+        out.push({ ...ev, data: { ...data, content: enrichedBlocks } });
+      } else {
+        out.push({ ...ev, data: { ...data, message: { ...data.message, content: enrichedBlocks } } });
+      }
+    }
+    return out;
   };
   const inFlightSessions = new Set();
 
@@ -762,22 +970,58 @@ export function makeHostSessionSeam(ctx) {
       if (!sessionId) return null;
       const sq = getSessionQuery();
       if (!sq || typeof sq.observeSession !== 'function') return null;
-      return await sq.observeSession(sessionId, {
-        afterSeq: typeof afterSeq === 'number' ? afterSeq : -1,
-        projectionMode: 'none',
-      });
+      const seqNum = typeof afterSeq === 'number' ? afterSeq : -1;
+      let obs = null;
+      try {
+        try {
+          obs = await sq.observeSession(sessionId, {
+            afterSeq: seqNum,
+            projectionMode: 'none',
+          });
+        } catch (err) {
+          const msg = String(err?.message ?? err);
+          const m = msg.match(/\(raw log:\s*([^)\r\n]+)\)/i);
+          if (m?.[1] && repairDshSessionLogFile(m[1].trim()).repaired) {
+            obs = await sq.observeSession(sessionId, {
+              afterSeq: seqNum,
+              projectionMode: 'none',
+            });
+          } else {
+            throw err;
+          }
+        }
+        if (!obs) return null;
+        if (Array.isArray(obs.events)) {
+          const enriched = await enrichEventImages([...obs.events], seqNum);
+          return {
+            sessionId: obs.header?.id ?? obs.sessionId ?? sessionId,
+            cwd: obs.header?.cwd ?? obs.cwd,
+            cursor: typeof obs.cursor === 'number' ? obs.cursor : (enriched.at(-1)?.seq ?? -1),
+            source: obs.source,
+            events: enriched,
+          };
+        }
+        return obs;
+      } finally {
+        try {
+          obs?.[Symbol.dispose]?.();
+        } catch {
+          /* ignore */
+        }
+      }
     },
     onSessionEvent(listener) {
       if (typeof ctx?.on !== 'function') return () => {};
-      return ctx.on('session/event', (sid, ev) => {
+      return ctx.on('session/event', (sidOrSession, ev) => {
         try {
-          listener(sid, ev);
+          const sid = typeof sidOrSession === 'string' ? sidOrSession : sidOrSession?.id;
+          if (sid) listener(sid, ev);
         } catch {
           /* 监听器异常不外溢到宿主事件总线 */
         }
       });
     },
-    async runLiveTurn({ sessionId, prompt, cwd, signal, rpcId, onLine }) {
+    async runLiveTurn({ sessionId, prompt, images, cwd, signal, rpcId, onLine }) {
       const agents = getAgents();
       const agent = agents?.get?.(sessionId);
       if (!agent) {
@@ -812,8 +1056,9 @@ export function makeHostSessionSeam(ctx) {
 
       const unsub =
         typeof ctx?.on === 'function'
-          ? ctx.on('session/event', (sid, ev) => {
-              if (sid !== sessionId || !ev) return;
+          ? ctx.on('session/event', (sidOrSession, ev) => {
+              const sid = typeof sidOrSession === 'string' ? sidOrSession : sidOrSession?.id;
+              if ((sid !== sessionId && sidOrSession !== agent.session) || !ev) return;
               const d = ev.data ?? {};
               switch (ev.type) {
                 case 'turn/start':
@@ -848,31 +1093,54 @@ export function makeHostSessionSeam(ctx) {
                   break;
                 }
                 case 'assistant/message': {
+                  const blocks = Array.isArray(d.message?.content) ? d.message.content : null;
+                  if (blocks) {
+                    for (const b of blocks) {
+                      if (b?.type === 'reasoning' && typeof b.text === 'string' && b.text) {
+                        emitLine({ type: 'thinking', text: b.text });
+                      } else if (b?.type === 'text' && typeof b.text === 'string' && b.text && !turnText) {
+                        emitLine({ type: 'text', text: b.text });
+                      }
+                    }
+                  }
                   const t = extractText(d.content ?? d.message ?? d.text ?? d);
                   if (t) finalMsgText = t;
                   break;
                 }
                 case 'tool/call':
-                case 'tool_call':
+                case 'tool_call': {
+                  let parsedInput = d.input ?? d.args;
+                  if (parsedInput === undefined && typeof d.arguments === 'string') {
+                    try {
+                      parsedInput = JSON.parse(d.arguments);
+                    } catch {
+                      parsedInput = { raw: d.arguments };
+                    }
+                  }
                   emitLine({
                     type: 'tool_call',
                     callId: d.callId ?? d.id ?? 'call',
                     tool: d.tool ?? d.name ?? 'tool',
-                    input: d.input ?? d.args ?? {},
+                    input: parsedInput ?? {},
                   });
                   break;
+                }
                 case 'tool/result':
-                case 'tool_result':
+                case 'tool_result': {
+                  const msg = d.message && typeof d.message === 'object' ? d.message : null;
                   emitLine({
                     type: 'tool_result',
-                    callId: d.callId ?? d.id ?? 'call',
-                    status: d.status === 'error' || d.isError ? 'error' : 'completed',
-                    result: d.result ?? d.content ?? '',
+                    callId: msg?.toolCallId ?? d.callId ?? d.id ?? 'call',
+                    status: msg?.isError === true || d.status === 'error' || d.isError ? 'error' : 'completed',
+                    result: extractText(msg?.content ?? d.result ?? d.content ?? ''),
                   });
                   break;
+                }
                 case 'turn/end':
                   if (d.status === 'failed' || d.status === 'error') {
                     turnErr = String(d.error ?? d.message ?? 'turn failed');
+                  } else if (d.reason?.kind === 'error') {
+                    turnErr = String(d.reason?.error?.message ?? d.reason?.message ?? 'turn failed');
                   }
                   emitLine({ type: 'status', phase: 'turn_end', turn: d.turn ?? 1 });
                   turnDoneResolve?.();
@@ -884,7 +1152,7 @@ export function makeHostSessionSeam(ctx) {
       const onAbort = () => {
         try {
           if (typeof agent.abort === 'function') agent.abort();
-          else if (typeof agent.cancel === 'function') agent.cancel();
+          else if (typeof agent.cancel === 'function') agent.cancel('user');
         } catch {
           /* ignore */
         }
@@ -894,13 +1162,46 @@ export function makeHostSessionSeam(ctx) {
 
       try {
         const tagRpcId = rpcId || `aitm:${Date.now()}`;
+        let contentBlocks = [{ type: 'text', text: String(prompt ?? '') }];
+        const attachments = getAttachments();
+        if (Array.isArray(images) && images.length > 0 && typeof attachments?.admitPromptContent === 'function') {
+          try {
+            const rawParts = [
+              ...images
+                .filter((im) => im && typeof im.dataBase64 === 'string' && im.dataBase64.trim())
+                .map((im) => ({
+                  type: 'image',
+                  mediaType: im.mime || 'image/png',
+                  data: im.dataBase64.replace(/\s+/g, ''),
+                  ...(im.name ? { name: im.name } : {}),
+                })),
+              { type: 'text', text: String(prompt ?? '') },
+            ];
+            const admitted = await attachments.admitPromptContent(rawParts);
+            if (Array.isArray(admitted) && admitted.length > 0) {
+              contentBlocks = admitted;
+            }
+          } catch {
+            /* admitPromptContent 失败时平稳退回纯文本块 */
+          }
+        }
+        // DSH ReactLoopAgent.followup(input) 要求传入合法的 V4 UserMessage 对象：
+        // 若直接传字符串，ReactLoopInbox.splice 会把字符串写进 `agent/inbox/spliced.data.inserted`，
+        // 导致持久化日志 session.v4.jsonl.zstd 在下次读取时抛 `SessionFormatError: agent/inbox/spliced requires message objects`。
+        const userMessage = Object.freeze({
+          id: crypto.randomUUID(),
+          role: 'user',
+          content: contentBlocks,
+          source: { kind: 'user', rpcId: tagRpcId },
+        });
         let followupRet = null;
         if (typeof agent.followup === 'function') {
-          followupRet = await agent.followup(prompt, { rpcId: tagRpcId });
+          followupRet = await agent.followup(userMessage, { rpcId: tagRpcId });
         } else if (agent.inbox && typeof agent.inbox.enqueue === 'function') {
           followupRet = await agent.inbox.enqueue({
             kind: 'followup',
             content: prompt,
+            message: userMessage,
             source: { kind: 'user', rpcId: tagRpcId },
           });
         } else {

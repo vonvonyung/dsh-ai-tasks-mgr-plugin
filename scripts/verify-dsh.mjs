@@ -2067,15 +2067,23 @@ async function checkTools() {
       onLine: (l) => liveLines.push(JSON.parse(l)),
     });
     check(
-      '会话接缝（P2）：runLiveTurn 调 agent.followup 并把 session/event 转成 dsh-json 行流（含 final）',
+      '会话接缝（P2）：runLiveTurn 调 agent.followup 传入标准 V4 UserMessage 对象（严禁裸字符串破坏 session.v4.jsonl.zstd）并把 session/event 转成 dsh-json 行流',
       liveRes?.ok === true &&
         liveRes?.text === '进程内借道回复' &&
         followupCalls.length === 1 &&
-        followupCalls[0].prompt === '增量指令' &&
+        typeof followupCalls[0].prompt === 'object' &&
+        followupCalls[0].prompt !== null &&
+        typeof followupCalls[0].prompt.id === 'string' &&
+        followupCalls[0].prompt.role === 'user' &&
+        Array.isArray(followupCalls[0].prompt.content) &&
+        followupCalls[0].prompt.content[0]?.type === 'text' &&
+        followupCalls[0].prompt.content[0]?.text === '增量指令' &&
+        followupCalls[0].prompt.source?.kind === 'user' &&
+        followupCalls[0].prompt.source?.rpcId === 'aitm:t-verify:1' &&
         followupCalls[0].opts?.rpcId === 'aitm:t-verify:1' &&
         liveLines.some((x) => x.type === 'session' && x.sessionId === 'session-live-verify') &&
         liveLines.some((x) => x.type === 'final' && x.text === '进程内借道回复'),
-      `ok=${String(liveRes?.ok)} lines=${String(liveLines.length)}`,
+      `ok=${String(liveRes?.ok)} lines=${String(liveLines.length)} msg=${JSON.stringify(followupCalls[0]?.prompt ?? null)}`,
     );
     check(
       '会话接缝（P2）：借道收尾的 sessions.flush 也经 ctx.get 拿到（不是属性访问）',
