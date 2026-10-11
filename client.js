@@ -1603,10 +1603,17 @@ window.__ModuleLoader__.load({
 
       const changeStatus = async (id, to) => {
         const idea = data.ideas.find((i) => i.id === id);
-        if (!idea || idea.status === to) return;
+        if (idea && idea.status === to) return;
         setNote(null);
         try {
-          await postAction(base, 'idea.setStatus', { id, status: to });
+          if (to === 'trash') {
+            await postAction(base, 'idea.delete', { id, mode: 'trash' });
+          } else {
+            await postAction(base, 'idea.setStatus', { id, status: to });
+          }
+          if (detail?.id === id && (to === 'archived' || to === 'trash')) {
+            setDetail(null);
+          }
           await load();
         } catch (err) {
           // 内核拒绝非法流转时把原因**原样**给出来（别只说「失败了」）
@@ -1749,7 +1756,7 @@ window.__ModuleLoader__.load({
               'data-board-move': '1',
               children: [
                 jsx.jsx('span', { style: { opacity: 0.7, flex: 'none' }, children: t('board.moveTo') }, 'label'),
-                ...IDEA_ORDER.filter((st) => st !== detail.meta?.status).map((st) =>
+                ...[...IDEA_ORDER, 'archived', 'trash'].filter((st) => st !== detail.meta?.status).map((st) =>
                   jsx.jsx(
                     'button',
                     {
@@ -2645,7 +2652,7 @@ window.__ModuleLoader__.load({
      * 形状复用 `detailMeta`（与右栏看板详情同一份），文案/徽章复用同一批原子（statusChip/taskStatusChip）。
      * 想要完整面板（差异/对话/验收按钮）时，抽屉底部的「打开完整面板」走 jump。
      */
-    function OvDetailDrawer({ t, state, onClose, onOpenFull }) {
+    function OvDetailDrawer({ t, state, onClose, onOpenFull, onArchive, onTrash }) {
       const s = state ?? {};
       const meta = s.meta ?? null;
       const tags = Array.isArray(meta?.tags) ? meta.tags : [];
@@ -2697,7 +2704,15 @@ window.__ModuleLoader__.load({
             ] }, 'content')
           : null,
         meta
-          ? jsx.jsx('a', { style: { ...OV.link, display: 'inline-block', marginTop: 8 }, 'data-ov-full': '1', onClick: onOpenFull, children: t('ov.openFull') }, 'full')
+          ? jsx.jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 8 }, children: [
+              jsx.jsx('a', { style: OV.link, 'data-ov-full': '1', onClick: onOpenFull, children: t('ov.openFull') }, 'full'),
+              onArchive && meta.status !== 'archived'
+                ? jsx.jsx('a', { style: OV.link, 'data-ov-archive': '1', onClick: onArchive, children: t('board.col.archived') }, 'archive')
+                : null,
+              onTrash && meta.status !== 'trash'
+                ? jsx.jsx('a', { style: { ...OV.link, color: 'var(--aitm-fg-err, #d35)' }, 'data-ov-trash': '1', onClick: onTrash, children: t('board.col.trash') }, 'trash')
+                : null,
+            ] }, 'foot')
           : null,
       ] });
     }
@@ -3046,6 +3061,24 @@ window.__ModuleLoader__.load({
                 state: drawer,
                 onClose: () => setDrawer(null),
                 onOpenFull: () => openInFullPanel(drawer.id),
+                onArchive: async () => {
+                  try {
+                    await postAction(base, 'idea.setStatus', { id: drawer.id, status: 'archived' });
+                    setDrawer(null);
+                    await load();
+                  } catch (e) {
+                    setOpenErr(String((e && e.message) || e));
+                  }
+                },
+                onTrash: async () => {
+                  try {
+                    await postAction(base, 'idea.delete', { id: drawer.id, mode: 'trash' });
+                    setDrawer(null);
+                    await load();
+                  } catch (e) {
+                    setOpenErr(String((e && e.message) || e));
+                  }
+                },
               }, 'drawer')
             : null,
         ] }, 'body'),

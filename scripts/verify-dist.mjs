@@ -228,7 +228,7 @@ async function main() {
     cfg.mode === 'vendor' && !cfg.error && cfg.vendorL3 === true,
     `mode=${String(cfg.mode)} error=${String(cfg.error ?? '无')} repoProblem=${String(cfg.repoProblem ?? '无').slice(0, 60)}`,
   );
-  const expected = expectedActions(REPO, 63); // 从内核源码推导（见 expected-actions.mjs）
+  const expected = expectedActions(REPO, 67); // 从内核源码推导（见 expected-actions.mjs）
   check(
     `身份核对：apiRev=2 / ${String(expected)} 个 action / 数据目录 = AI_TASKS_HOME`,
     cfg.identity?.apiRev === 2 && cfg.identity?.actions === expected && cfg.identity?.dataDir === dataHome,

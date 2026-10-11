@@ -197,6 +197,12 @@ const state = {
   mode: null,
   /** 进程内 L3 句柄（有它就是直连内核，call() 不走 HTTP） */
   l3: null,
+  /** 当前已加载的 dist-server/l3.mjs 的 mtimeMs（用于检测重新构建后自动热重载） */
+  l3Mtime: 0,
+  /** 进程内 L3 当前绑定的回环端口（热重载时优先复用同一端口，避免已打开的面板 iframe 断连） */
+  l3Port: 0,
+  /** 正在热重载时的互斥 Promise */
+  reloading: null,
   /** cordis 的 ctx（apply 时记下）：起内核时用它现取子进程接缝 */
   ctx: null,
   /** 子进程接缝的说明（给日志/自检看：是宿主托管还是内核自己 spawn） */
@@ -942,9 +948,142 @@ export function pickHostSession(ctx) {
   return { hostSession: makeHostSessionSeam(ctx), why: null };
 }
 
+/**
+ * 进程内 L3 热重载（#9）：
+ * - 当用户在 Windows 上 `git pull && npm run build`（或修改 `src/`）后，无需退出 DSH，
+ *   通过 query 参数绕过 Node ESM 模块缓存重新 import 最新 `dist-server/l3.mjs`，
+ *   并优先复用同一回环端口，彻底消除“半新半旧”的内存旧实例问题。
+ */
+export async function reloadL3(opts = {}) {
+  if (state.reloading) return state.reloading;
+  state.reloading = (async () => {
+    try {
+      if (state.mode !== 'l3' && state.mode !== 'vendor') {
+        return {
+          reloaded: false,
+          version: state.identity?.version ?? pluginVersion(),
+          buildAt: state.identity?.buildAt ?? null,
+          base: state.base,
+        };
+      }
+      const vendored = state.mode === 'vendor';
+      if (!vendored && opts.rebuild !== false) {
+        await ensureL3Bundle(DEFAULTS.repo);
+      }
+      const bundlePath = vendored ? VENDOR_L3() : L3_BUNDLE();
+      const diskMtime = exists(bundlePath) ? fs.statSync(bundlePath).mtimeMs : 0;
+      if (!opts.force && state.l3 && diskMtime > 0 && diskMtime <= state.l3Mtime) {
+        return {
+          reloaded: false,
+          version: state.identity?.version ?? pluginVersion(),
+          buildAt: state.identity?.buildAt ?? null,
+          base: state.base,
+        };
+      }
+
+      // 若当前有在跑的 AI 任务且未显式 force，暂缓自动替换（等任务结束再换）
+      const activeStats = state.l3?.app?.runner?.stats;
+      if (!opts.force && activeStats && (activeStats.running > 0 || activeStats.queued > 0)) {
+        return {
+          reloaded: false,
+          version: state.identity?.version ?? pluginVersion(),
+          buildAt: state.identity?.buildAt ?? null,
+          base: state.base,
+        };
+      }
+
+      const prevL3 = state.l3;
+      const prevPort = state.l3Port || prevL3?.port || 0;
+      if (prevL3) {
+        try {
+          prevL3.server?.closeAllConnections?.();
+        } catch {
+          /* ignore */
+        }
+        await prevL3.stop().catch(() => undefined);
+      }
+
+      const staticDir = vendored
+        ? exists(path.join(VENDOR_DIST(), 'index.html'))
+          ? VENDOR_DIST()
+          : null
+        : RENDERER_DIST();
+      const cacheBustUrl = `${pathToFileURL(bundlePath).href}?v=${diskMtime || Date.now()}_${Date.now()}`;
+      const mod = await import(cacheBustUrl);
+      if (typeof mod?.createL3 !== 'function') {
+        throw new Error(`L3 产物缺少 createL3（${bundlePath}）`);
+      }
+
+      const seam = pickHostSpawn(state.ctx);
+      const sessionSeam = pickHostSession(state.ctx);
+      const makeOpts = (port) => ({
+        home: vendored
+          ? process.env.AI_TASKS_HOME ?? path.join(os.homedir(), '.ai-tasks-mgr')
+          : process.env.AI_TASKS_HOME ?? path.join(DEFAULTS.repo, '.aitasks'),
+        port,
+        host: '127.0.0.1',
+        staticDir,
+        version: pluginVersion(),
+        spawn: seam.spawn,
+        hostSession: sessionSeam.hostSession,
+        reloadL3: async () => {
+          setTimeout(() => {
+            void reloadL3({ force: true }).catch(() => undefined);
+          }, 25);
+          return {
+            reloaded: true,
+            version: pluginVersion(),
+            buildAt: state.identity?.buildAt ?? null,
+          };
+        },
+      });
+
+      let nextL3;
+      try {
+        nextL3 = await mod.createL3(makeOpts(prevPort));
+      } catch {
+        nextL3 = await mod.createL3(makeOpts(0));
+      }
+      const h = await nextL3.health();
+      state.l3 = nextL3;
+      state.l3Mtime = diskMtime || Date.now();
+      state.l3Port = nextL3.port || prevPort;
+      state.base = nextL3.base;
+      state.identity = backendId(h);
+      note(`[host] 进程内 L3 已热重载：${nextL3.base}（v${state.identity.version ?? '?'}，共 ${h.actions} 个 action）`);
+      logLine(`[host] hot-reloaded in-process L3 at ${nextL3.base} (version=${state.identity.version}, actions=${h.actions})`);
+      return {
+        reloaded: true,
+        version: state.identity.version ?? pluginVersion(),
+        buildAt: state.identity.buildAt ?? null,
+        base: nextL3.base,
+      };
+    } finally {
+      state.reloading = null;
+    }
+  })();
+  return state.reloading;
+}
+
+/** 若磁盘上的 dist-server/l3.mjs 已更新，自动触发一次进程内 L3 热重载 */
+async function maybeHotReloadL3() {
+  if (state.mode !== 'l3' || !state.l3) return;
+  const bundlePath = L3_BUNDLE();
+  if (!exists(bundlePath)) return;
+  try {
+    const diskMtime = fs.statSync(bundlePath).mtimeMs;
+    if (diskMtime > state.l3Mtime) {
+      await reloadL3({ force: false, rebuild: false });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 /** 调一个 action：进程内 L3 直连内核；外部后端（AITM_URL）/旧桥走 POST /api/<action> */
 async function call(action, payload = {}) {
   const base = await ensureBase();
+  await maybeHotReloadL3();
   // 进程内（l3 / vendor）直连内核；external / 旧桥走 HTTP
   if (state.l3) return state.l3.invoke(action, payload);
   return httpCall(base, action, payload);
@@ -972,7 +1111,10 @@ export async function ensureBase() {
     }
     return state.base;
   }
-  if (state.base) return state.base;
+  if (state.base) {
+    await maybeHotReloadL3();
+    return state.base;
+  }
   if (state.starting) return state.starting;
 
   state.starting = (async () => {
@@ -993,9 +1135,10 @@ export async function ensureBase() {
 
       const bundlePath = vendored ? VENDOR_L3() : L3_BUNDLE();
       const staticDir = vendored ? (exists(path.join(VENDOR_DIST(), 'index.html')) ? VENDOR_DIST() : null) : RENDERER_DIST();
+      const diskMtime = exists(bundlePath) ? fs.statSync(bundlePath).mtimeMs : Date.now();
       let mod;
       try {
-        mod = await import(pathToFileURL(bundlePath).href);
+        mod = await import(`${pathToFileURL(bundlePath).href}?v=${diskMtime}`);
       } catch (err) {
         throw new Error(
           vendored
@@ -1028,10 +1171,22 @@ export async function ensureBase() {
         spawn: seam.spawn,
         // 有 ctx.agents / ctx.sessionQuery 就打通 P1 只读镜像 + P2 进程内借道投递
         hostSession: sessionSeam.hostSession,
+        reloadL3: async () => {
+          setTimeout(() => {
+            void reloadL3({ force: true }).catch(() => undefined);
+          }, 25);
+          return {
+            reloaded: true,
+            version: pluginVersion(),
+            buildAt: state.identity?.buildAt ?? null,
+          };
+        },
       });
       const h = await l3.health();
       if (!compatible(h)) throw incompatibleError(l3.base, h, vendored ? '自带内核' : '进程内 L3');
       state.l3 = l3;
+      state.l3Mtime = diskMtime;
+      state.l3Port = l3.port || 0;
       state.mode = vendored ? 'vendor' : 'l3';
       state.base = l3.base;
       state.identity = backendId(h);
@@ -1126,7 +1281,7 @@ export async function ensureBase() {
 export { stop };
 
 /** 离线自检用的钩子（verify-dsh 拿假 subprocess / session 服务把适配层过一遍） */
-export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession, hostService, hostSeamDiagnosis };
+export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession, hostService, hostSeamDiagnosis, reloadL3 };
 
 /** 诊断用：把「插件眼里的世界」原样抖出来（scripts/doctor.mjs 用；也让 verify 能断言自检逻辑） */
 export function diagnose() {
@@ -1176,6 +1331,8 @@ async function stop() {
       note(`[host] 收 L3 时报错（忽略）：${String(err?.message ?? err)}`);
     }
     state.l3 = null;
+    state.l3Mtime = 0;
+    state.l3Port = 0;
     state.mode = null;
   }
   if (state.child?.pid && !state.adopted) {
@@ -1345,6 +1502,18 @@ export function apply(ctx) {
         path: '/aitm-plugin',
         handler: async (req, res) => {
           const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          if (url.pathname === '/aitm-plugin/reload') {
+            try {
+              await ensureBase();
+              const r = await reloadL3({ force: true });
+              res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+              res.end(JSON.stringify({ ok: true, ...r }));
+            } catch (err) {
+              res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+              res.end(JSON.stringify({ ok: false, error: String(err?.message ?? err) }));
+            }
+            return true;
+          }
           if (url.pathname === '/aitm-plugin/config') {
             let base = null;
             let error = null;
