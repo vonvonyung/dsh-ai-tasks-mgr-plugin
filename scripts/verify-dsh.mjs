@@ -104,7 +104,7 @@ const results = [];
  * 期望的 action 数：**从内核源码推导**（`scripts/expected-actions.mjs`），读不到才退回 63。
  * 别再硬编码 —— 内核加一个 action 就让一串断言集体变红，红得没有信息量（2026-10-06 踩过）。
  */
-const EXPECTED_ACTIONS = expectedActions(REPO, 74);
+const EXPECTED_ACTIONS = expectedActions(REPO, 75);
 /**
  * client.js 的指纹，算法与 DSH 的 `artifactRevision` **逐字一致**
  * （`dsh-client-modules`：sha1("plugin-artifact"\0) + 各字段带长度前缀，取前 12 位）。
