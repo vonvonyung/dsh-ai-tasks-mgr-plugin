@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-aitm",
-  "version": "0.3.40",
+  "version": "0.3.41",
   "type": "module",
   "description": "AI 任务台 × DeepSeek Harness 插件：13 个工具（想法/任务/日历/备份）+ 右侧栏面板（原生看板/日历/合集）",
   "license": "MIT",
