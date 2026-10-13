@@ -553,6 +553,9 @@ var DEFAULT_SETTINGS = {
     tombstone: true
   }
 };
+var BRIDGE_PROTOCOL_VERSION = 1;
+var BRIDGE_SERVICE_ID = "ai-tasks-mgr";
+var BRIDGE_CAPABILITIES = ["idea.create", "idea.start-preview", "idea.start"];
 
 // src/shared/cli-presets.ts
 var CLI_PRESET_LIST = [
@@ -979,6 +982,25 @@ var Store = class _Store {
   getIdea(id) {
     return this.ideas.get(id);
   }
+  /** 按外部来源引用（plugin + taskId）查找非回收站想法，用于桥接幂等去重 */
+  findIdeaBySourceRef(sourceRef) {
+    for (const idea of this.ideas.values()) {
+      if (idea.status === "trash") continue;
+      if (idea.sourceRef && idea.sourceRef.plugin === sourceRef.plugin && idea.sourceRef.taskId === sourceRef.taskId) {
+        return idea;
+      }
+    }
+    return void 0;
+  }
+  /** 按桥接创建幂等键查找非回收站想法 */
+  findIdeaByBridgeKey(key) {
+    if (!key) return void 0;
+    for (const idea of this.ideas.values()) {
+      if (idea.status === "trash") continue;
+      if (idea.bridgeIdempotencyKey === key) return idea;
+    }
+    return void 0;
+  }
   putIdea(idea) {
     this.ideas.set(idea.id, idea);
     this.queue.ideas.schedule(() => [...this.ideas.values()]);
@@ -1005,6 +1027,14 @@ var Store = class _Store {
   }
   getTask(id) {
     return this.tasks.get(id);
+  }
+  /** 按桥接启动幂等键查找任务 */
+  findTaskByIdempotencyKey(key) {
+    if (!key) return void 0;
+    for (const task of this.tasks.values()) {
+      if (task.idempotencyKey === key) return task;
+    }
+    return void 0;
   }
   putTask(task) {
     this.tasks.set(task.id, task);
@@ -1300,7 +1330,7 @@ function clampNum(v, min, max, fallback) {
 }
 
 // src/shared/build-info.ts
-var BUILD_AT = true ? "2026-10-11T13:22:24.024Z" : null;
+var BUILD_AT = true ? "2026-10-13T09:46:17.907Z" : null;
 
 // src/shared/api-rev.ts
 var API_REV = 2;
@@ -4635,6 +4665,8 @@ var TaskRunner = class {
       commits: [],
       error: null,
       turns: 0,
+      ...input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {},
+      ...input.sourceRef ? { sourceRef: input.sourceRef } : {},
       createdAt: now,
       startedAt: null,
       endedAt: null,
@@ -9802,6 +9834,352 @@ function arrOf(v) {
   return t ? [t] : [];
 }
 
+// src/core/bridge.ts
+var MAX_BRIDGE_TITLE_LENGTH = 200;
+var MAX_BRIDGE_KEY_LENGTH = 256;
+var BridgeApiError = class extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+    this.name = "BridgeApiError";
+  }
+  toEnvelope() {
+    return {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: this.code,
+        message: this.message
+      }
+    };
+  }
+};
+var KeyedMutex = class {
+  chains = /* @__PURE__ */ new Map();
+  async run(key, fn) {
+    const prev = this.chains.get(key) ?? Promise.resolve();
+    const next = prev.catch(() => void 0).then(fn);
+    this.chains.set(key, next);
+    try {
+      return await next;
+    } finally {
+      if (this.chains.get(key) === next) {
+        this.chains.delete(key);
+      }
+    }
+  }
+};
+function isPlainObject(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function assertProtocolVersion(body) {
+  if (body.protocol !== void 0 && body.protocol !== BRIDGE_PROTOCOL_VERSION) {
+    throw new BridgeApiError(
+      400,
+      "incompatible",
+      `\u4E0D\u652F\u6301\u7684\u6865\u63A5\u534F\u8BAE\u7248\u672C\uFF1A${String(body.protocol)}\uFF08\u5F53\u524D\u4EC5\u652F\u6301 protocol=${BRIDGE_PROTOCOL_VERSION}\uFF09`
+    );
+  }
+}
+function normalizeSourceRef(raw) {
+  if (!isPlainObject(raw)) {
+    throw new BridgeApiError(400, "invalid-source-ref", "\u7F3A\u5C11\u6709\u6548\u7684 sourceRef\uFF08\u9700\u5305\u542B plugin \u4E0E taskId\uFF09");
+  }
+  const plugin = typeof raw.plugin === "string" ? raw.plugin.trim() : "";
+  const taskId = typeof raw.taskId === "string" ? raw.taskId.trim() : typeof raw.taskId === "number" && Number.isFinite(raw.taskId) ? String(raw.taskId) : "";
+  if (!plugin || plugin.length > 64 || !taskId || taskId.length > 128) {
+    throw new BridgeApiError(400, "invalid-source-ref", "sourceRef.plugin \u4E0E sourceRef.taskId \u5FC5\u987B\u4E3A\u975E\u7A7A\u5B57\u7B26\u4E32");
+  }
+  return { plugin, taskId };
+}
+function normalizeBridgeTitle(raw) {
+  if (typeof raw !== "string") {
+    throw new BridgeApiError(400, "invalid-task", "\u60F3\u6CD5\u6807\u9898\u5FC5\u987B\u4E3A\u5B57\u7B26\u4E32");
+  }
+  const title = raw.replace(/\s+/g, " ").trim();
+  if (!title) {
+    throw new BridgeApiError(400, "invalid-task", "\u60F3\u6CD5\u6807\u9898\u4E0D\u80FD\u4E3A\u7A7A");
+  }
+  if (title.length > MAX_BRIDGE_TITLE_LENGTH) {
+    throw new BridgeApiError(400, "invalid-task", `\u60F3\u6CD5\u6807\u9898\u4E0D\u80FD\u8D85\u8FC7 ${MAX_BRIDGE_TITLE_LENGTH} \u4E2A\u5B57\u7B26`);
+  }
+  return title;
+}
+function normalizeBridgeTags(raw) {
+  if (raw === void 0 || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new BridgeApiError(400, "invalid-task", "tags \u5FC5\u987B\u4E3A\u5B57\u7B26\u4E32\u6570\u7EC4");
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const item of raw) {
+    if (typeof item !== "string") {
+      throw new BridgeApiError(400, "invalid-task", "tags \u4E2D\u7684\u6BCF\u4E00\u9879\u5FC5\u987B\u4E3A\u5B57\u7B26\u4E32");
+    }
+    const t = item.trim().slice(0, 32);
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+function buildBridgeDescription(note, due) {
+  const parts = [];
+  const trimmedNote = note.trim();
+  if (trimmedNote) parts.push(trimmedNote);
+  if (due) parts.push(`\u622A\u6B62\u65E5\u671F\uFF1A${due}`);
+  return parts.join("\n\n");
+}
+function buildDefaultInstruction(idea, customInstruction) {
+  const custom = customInstruction?.trim();
+  if (custom) return custom;
+  const lines = [`\u5B9E\u73B0\u60F3\u6CD5\uFF1A${idea.title}`];
+  if (idea.description.trim()) {
+    lines.push(idea.description.trim());
+  }
+  if (idea.spec?.trim()) {
+    lines.push(`\u53C2\u8003\u5DF2\u68B3\u7406\u89C4\u683C\uFF1A
+${idea.spec.trim()}`);
+  }
+  return lines.join("\n\n");
+}
+var BridgeService = class {
+  constructor(store, registry, runner, appVersion) {
+    this.store = store;
+    this.registry = registry;
+    this.runner = runner;
+    this.appVersion = appVersion;
+  }
+  mutex = new KeyedMutex();
+  discovery(extra) {
+    return {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: true,
+      service: BRIDGE_SERVICE_ID,
+      version: this.appVersion,
+      apiRev: API_REV,
+      ...extra?.base ? { base: extra.base } : {},
+      capabilities: [...BRIDGE_CAPABILITIES]
+    };
+  }
+  async createIdea(rawInput, opts = {}) {
+    if (!isPlainObject(rawInput)) {
+      throw new BridgeApiError(400, "bad-request", "\u8BF7\u6C42\u4F53\u5FC5\u987B\u4E3A JSON \u5BF9\u8C61");
+    }
+    assertProtocolVersion(rawInput);
+    const sourceRef = normalizeSourceRef(rawInput.sourceRef);
+    const title = normalizeBridgeTitle(rawInput.title);
+    if (rawInput.note !== void 0 && rawInput.note !== null && typeof rawInput.note !== "string") {
+      throw new BridgeApiError(400, "invalid-task", "note \u5FC5\u987B\u4E3A\u5B57\u7B26\u4E32");
+    }
+    const note = typeof rawInput.note === "string" ? rawInput.note.slice(0, 2e4) : "";
+    if (rawInput.due !== void 0 && rawInput.due !== null && typeof rawInput.due !== "string") {
+      throw new BridgeApiError(400, "invalid-task", "due \u5FC5\u987B\u4E3A\u5B57\u7B26\u4E32\u6216 null");
+    }
+    const due = typeof rawInput.due === "string" && rawInput.due.trim() ? rawInput.due.trim().slice(0, 64) : null;
+    const tags = normalizeBridgeTags(rawInput.tags);
+    const priority = IDEA_PRIORITIES.includes(String(rawInput.priority ?? "")) ? rawInput.priority : "p2";
+    const idempotencyKey = typeof opts.idempotencyKey === "string" ? opts.idempotencyKey.trim() : "";
+    if (idempotencyKey.length > MAX_BRIDGE_KEY_LENGTH) {
+      throw new BridgeApiError(400, "bad-request", `Idempotency-Key \u957F\u5EA6\u4E0D\u80FD\u8D85\u8FC7 ${MAX_BRIDGE_KEY_LENGTH}`);
+    }
+    const lockKey = `idea:${sourceRef.plugin}:${sourceRef.taskId}`;
+    return this.mutex.run(lockKey, async () => {
+      if (idempotencyKey) {
+        const byKey = this.store.findIdeaByBridgeKey(idempotencyKey);
+        if (byKey && byKey.sourceRef && (byKey.sourceRef.plugin !== sourceRef.plugin || byKey.sourceRef.taskId !== sourceRef.taskId)) {
+          throw new BridgeApiError(409, "idempotency-conflict", "Idempotency-Key \u5DF2\u88AB\u5176\u4ED6\u6765\u6E90\u4EFB\u52A1\u5360\u7528");
+        }
+      }
+      const existing = this.store.findIdeaBySourceRef(sourceRef);
+      if (existing) {
+        return {
+          protocol: BRIDGE_PROTOCOL_VERSION,
+          ok: true,
+          ideaId: existing.id,
+          created: false
+        };
+      }
+      const now = Date.now();
+      const defaultRepoId = this.store.listRepos()[0]?.id ?? null;
+      const created = this.store.putIdea({
+        id: safeId("i"),
+        title,
+        description: buildBridgeDescription(note, due),
+        tags,
+        priority,
+        status: "inbox",
+        repoId: defaultRepoId,
+        workDir: null,
+        estimate: null,
+        spec: null,
+        starred: false,
+        sourceRef,
+        due,
+        ...idempotencyKey ? { bridgeIdempotencyKey: idempotencyKey } : {},
+        createdAt: now,
+        updatedAt: now,
+        closedAt: null
+      });
+      await this.store.flush();
+      return {
+        protocol: BRIDGE_PROTOCOL_VERSION,
+        ok: true,
+        ideaId: created.id,
+        created: true
+      };
+    });
+  }
+  async previewStart(ideaIdRaw, rawInput = {}) {
+    const ideaId = typeof ideaIdRaw === "string" ? ideaIdRaw.trim() : "";
+    if (!ideaId) {
+      throw new BridgeApiError(400, "invalid-idea", "\u7F3A\u5C11\u60F3\u6CD5 ID");
+    }
+    if (rawInput !== void 0 && rawInput !== null) {
+      if (!isPlainObject(rawInput)) {
+        throw new BridgeApiError(400, "bad-request", "\u8BF7\u6C42\u4F53\u5FC5\u987B\u4E3A JSON \u5BF9\u8C61");
+      }
+      assertProtocolVersion(rawInput);
+    }
+    const body = isPlainObject(rawInput) ? rawInput : {};
+    if (body.instruction !== void 0 && typeof body.instruction !== "string") {
+      throw new BridgeApiError(400, "bad-request", "instruction \u5FC5\u987B\u4E3A\u5B57\u7B26\u4E32");
+    }
+    const { idea, repo, engine, model, instruction, sideEffects } = await this.resolveStartPlan(
+      ideaId,
+      typeof body.instruction === "string" ? body.instruction : void 0
+    );
+    const project = idea.workDir ? `${repo.name} (${idea.workDir})` : repo.name;
+    return {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: true,
+      ideaId: idea.id,
+      preview: {
+        target: {
+          project,
+          engine,
+          model
+        },
+        instruction,
+        sideEffects
+      }
+    };
+  }
+  async startWork(ideaIdRaw, rawInput = {}, opts = {}) {
+    const ideaId = typeof ideaIdRaw === "string" ? ideaIdRaw.trim() : "";
+    if (!ideaId) {
+      throw new BridgeApiError(400, "invalid-idea", "\u7F3A\u5C11\u60F3\u6CD5 ID");
+    }
+    if (rawInput !== void 0 && rawInput !== null) {
+      if (!isPlainObject(rawInput)) {
+        throw new BridgeApiError(400, "bad-request", "\u8BF7\u6C42\u4F53\u5FC5\u987B\u4E3A JSON \u5BF9\u8C61");
+      }
+      assertProtocolVersion(rawInput);
+    }
+    const body = isPlainObject(rawInput) ? rawInput : {};
+    if (body.instruction !== void 0 && typeof body.instruction !== "string") {
+      throw new BridgeApiError(400, "bad-request", "instruction \u5FC5\u987B\u4E3A\u5B57\u7B26\u4E32");
+    }
+    const reqSourceRef = body.sourceRef !== void 0 ? normalizeSourceRef(body.sourceRef) : void 0;
+    const idempotencyKey = typeof opts.idempotencyKey === "string" ? opts.idempotencyKey.trim() : "";
+    if (!idempotencyKey) {
+      throw new BridgeApiError(400, "missing-idempotency-key", "\u542F\u52A8\u64CD\u4F5C\u5FC5\u987B\u63D0\u4F9B Idempotency-Key \u8BF7\u6C42\u5934");
+    }
+    if (idempotencyKey.length > MAX_BRIDGE_KEY_LENGTH) {
+      throw new BridgeApiError(400, "bad-request", `Idempotency-Key \u957F\u5EA6\u4E0D\u80FD\u8D85\u8FC7 ${MAX_BRIDGE_KEY_LENGTH}`);
+    }
+    return this.mutex.run(
+      `start-key:${idempotencyKey}`,
+      () => this.mutex.run(`start-idea:${ideaId}`, async () => {
+        const existingByKey = this.store.findTaskByIdempotencyKey(idempotencyKey);
+        if (existingByKey) {
+          if (existingByKey.ideaId !== ideaId) {
+            throw new BridgeApiError(409, "idempotency-conflict", "\u8BE5 Idempotency-Key \u5DF2\u7ED1\u5B9A\u5230\u53E6\u4E00\u6761\u60F3\u6CD5");
+          }
+          return {
+            protocol: BRIDGE_PROTOCOL_VERSION,
+            ok: true,
+            started: true,
+            taskId: existingByKey.id,
+            deduplicated: true
+          };
+        }
+        const { idea, repo, instruction } = await this.resolveStartPlan(
+          ideaId,
+          typeof body.instruction === "string" ? body.instruction : void 0
+        );
+        if (reqSourceRef && idea.sourceRef && (idea.sourceRef.plugin !== reqSourceRef.plugin || idea.sourceRef.taskId !== reqSourceRef.taskId)) {
+          throw new BridgeApiError(409, "conflict", "\u60F3\u6CD5\u7684 sourceRef \u4E0E\u8BF7\u6C42\u4E0D\u5339\u914D");
+        }
+        if (!idea.repoId) {
+          this.store.putIdea({
+            ...idea,
+            repoId: repo.id,
+            updatedAt: Date.now()
+          });
+        }
+        const task = await this.runner.startTask({
+          ideaId: idea.id,
+          instruction,
+          kind: "implement",
+          idempotencyKey,
+          sourceRef: reqSourceRef ?? idea.sourceRef ?? null
+        });
+        await this.store.flush();
+        return {
+          protocol: BRIDGE_PROTOCOL_VERSION,
+          ok: true,
+          started: true,
+          taskId: task.id,
+          deduplicated: false
+        };
+      })
+    );
+  }
+  async resolveStartPlan(ideaId, customInstruction) {
+    const idea = this.store.getIdea(ideaId);
+    if (!idea || idea.status === "trash") {
+      throw new BridgeApiError(404, "not-found", `\u60F3\u6CD5\u4E0D\u5B58\u5728\uFF1A${ideaId}`);
+    }
+    const repos = this.store.listRepos();
+    const repoId = idea.repoId ?? repos[0]?.id ?? null;
+    const repo = repoId ? this.store.getRepo(repoId) : void 0;
+    if (!repo) {
+      throw new BridgeApiError(409, "no-repo", "AI \u4EFB\u52A1\u53F0\u5C1A\u672A\u914D\u7F6E\u76EE\u6807\u4EE3\u7801\u4ED3\u5E93\uFF0C\u8BF7\u5148\u5728 AI \u4EFB\u52A1\u53F0\u6DFB\u52A0\u4ED3\u5E93");
+    }
+    if (Array.isArray(idea.blockedBy) && idea.blockedBy.length > 0) {
+      const unresolved = idea.blockedBy.map((depId) => this.store.getIdea(depId)).filter((dep) => Boolean(dep && dep.status !== "done" && dep.status !== "trash"));
+      if (unresolved.length > 0) {
+        const names = unresolved.map((u) => `\u300A${u.title}\u300B`).join("\u3001");
+        throw new BridgeApiError(409, "blocked", `\u8BE5\u60F3\u6CD5\u5B58\u5728\u672A\u5B8C\u6210\u7684\u524D\u7F6E\u4F9D\u8D56\uFF1A${names}`);
+      }
+    }
+    const active = this.store.listTasks({ ideaId: idea.id }).find((t) => isActiveTask(t.status));
+    if (active) {
+      throw new BridgeApiError(409, "conflict", `\u8BE5\u60F3\u6CD5\u5DF2\u6709\u8FDB\u884C\u4E2D\u7684\u4EFB\u52A1\uFF08${active.id}\uFF09`);
+    }
+    const settings = this.store.getSettings();
+    const adapter = this.registry.resolve(settings);
+    const caps = await adapter.capabilities(settings);
+    if (!caps.available) {
+      throw new BridgeApiError(409, "engine-not-ready", caps.detail || "\u5F53\u524D\u914D\u7F6E\u7684 AI \u5F15\u64CE\u4E0D\u53EF\u7528");
+    }
+    const engine = engineName(settings.activeAdapter, settings);
+    const model = settings.activeAdapter === "cli" ? settings.cli.model.trim() || "\u9ED8\u8BA4\u6A21\u578B" : settings.activeAdapter === "api" ? settings.api.model.trim() || "\u9ED8\u8BA4\u6A21\u578B" : "mock";
+    const instruction = buildDefaultInstruction(idea, customInstruction);
+    const sideEffects = [
+      `\u5728\u4ED3\u5E93\u300C${repo.name}\u300D\u57FA\u4E8E\u5206\u652F ${repo.defaultBranch} \u521B\u5EFA\u72EC\u7ACB git worktree \u4E0E\u4EFB\u52A1\u5206\u652F`,
+      `\u5C06\u60F3\u6CD5\u72B6\u6001\u63A8\u8FDB\u81F3\u300C\u5F00\u53D1\u4E2D\u300D\u5E76\u4F7F\u7528\u5F15\u64CE\u300C${engine}\u300D\u6267\u884C\u5F00\u53D1\u4EFB\u52A1`
+    ];
+    if (settings.autoCommit) {
+      sideEffects.push("\u4EFB\u52A1\u5B8C\u6210\u540E\u81EA\u52A8\u63D0\u4EA4\u5DE5\u4F5C\u533A\u6539\u52A8\u5E76\u8F6C\u5165\u300C\u5F85\u9A8C\u6536\u300D");
+    }
+    return { idea, repo, engine, model, instruction, sideEffects };
+  }
+};
+
 // src/shared/calendar.ts
 function dayKey(ts) {
   const d = new Date(ts);
@@ -9954,6 +10332,7 @@ var AppApi = class _AppApi {
     this.feed = feed;
     this.backup = backup;
     this.feishu = feishu;
+    this.bridge = new BridgeService(store, registry, runner, hooks.version);
   }
   /**
    * 已实现的 action 名（形如 `idea.list`）。HTTP 白名单与自检都从这里取，
@@ -9969,6 +10348,7 @@ var AppApi = class _AppApi {
   feed;
   backup;
   feishu;
+  bridge;
   static async create(hooks, deps = {}) {
     paths.ensure();
     const store = await Store.open();
@@ -11473,15 +11853,195 @@ function extractHtmlMeta(html, nameOrProp) {
 }
 
 // src/shared/version.ts
-var APP_VERSION = "0.3.47";
+var APP_VERSION = "0.3.48";
 
 // src/core/server/http.ts
 import http from "node:http";
+import crypto2 from "node:crypto";
 import fs13 from "node:fs";
 import path17 from "node:path";
 import { Buffer as Buffer4 } from "node:buffer";
+var BRIDGE_MAX_BODY_BYTES = 64 * 1024;
+function isLoopbackHostname(hostname) {
+  const h = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "127.0.0.1" || h === "localhost" || h === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+function verifyBridgeTokenConstantTime(provided, expected) {
+  if (!provided || !expected) return false;
+  const a = Buffer4.from(provided, "utf8");
+  const b = Buffer4.from(expected, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto2.timingSafeEqual(a, b);
+}
+function extractBridgeTokenFromHeaders(headers) {
+  const auth = typeof headers.authorization === "string" ? headers.authorization.trim() : "";
+  if (/^bearer\s+/i.test(auth)) {
+    return auth.replace(/^bearer\s+/i, "").trim();
+  }
+  const custom = headers["x-aitm-bridge-token"];
+  if (typeof custom === "string") return custom.trim();
+  return "";
+}
+function checkBridgeOriginAndHost(req, opts = {}) {
+  const hostHeader = typeof req.headers.host === "string" ? req.headers.host.trim() : "";
+  if (!opts.allowNonLoopbackHost && hostHeader) {
+    let parsedHost = "";
+    try {
+      parsedHost = new URL(`http://${hostHeader}`).hostname;
+    } catch {
+      return { ok: false, status: 403, code: "forbidden-host", message: "\u975E\u6CD5\u7684 Host \u8BF7\u6C42\u5934" };
+    }
+    if (!isLoopbackHostname(parsedHost)) {
+      return { ok: false, status: 403, code: "forbidden-host", message: "\u6865\u63A5\u63A5\u53E3\u4EC5\u5141\u8BB8\u56DE\u73AF\u5730\u5740\uFF08127.0.0.1 / localhost / ::1\uFF09\u8BBF\u95EE" };
+    }
+  }
+  const secFetchSite = typeof req.headers["sec-fetch-site"] === "string" ? req.headers["sec-fetch-site"].trim().toLowerCase() : "";
+  if (secFetchSite === "cross-site") {
+    return { ok: false, status: 403, code: "forbidden-origin", message: "\u62D2\u7EDD\u8DE8\u7AD9\u8BF7\u6C42\uFF08Sec-Fetch-Site: cross-site\uFF09" };
+  }
+  const origin = typeof req.headers.origin === "string" ? req.headers.origin.trim() : "";
+  if (origin) {
+    if (origin === "null") {
+      return { ok: false, status: 403, code: "forbidden-origin", message: "\u62D2\u7EDD\u6C99\u7BB1\u6216\u533F\u540D\u6E90\u8BF7\u6C42\uFF08Origin: null\uFF09" };
+    }
+    let originHost = "";
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return { ok: false, status: 403, code: "forbidden-origin", message: "\u975E\u6CD5\u7684 Origin \u8BF7\u6C42\u5934" };
+    }
+    if (!hostHeader || originHost !== hostHeader.toLowerCase()) {
+      return { ok: false, status: 403, code: "forbidden-origin", message: "\u62D2\u7EDD\u8DE8\u6E90\u8BF7\u6C42\uFF08Origin \u4E0E Host \u4E0D\u5339\u914D\uFF09" };
+    }
+  }
+  return { ok: true };
+}
+async function handleBridgeRequest(req, res, url, bridge, bridgeToken, allowNonLoopbackHost) {
+  const sendBridge = (status, body, extraHeaders = {}) => {
+    res.writeHead(status, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      ...extraHeaders
+    });
+    res.end(JSON.stringify(body));
+  };
+  const fence = checkBridgeOriginAndHost(req, { allowNonLoopbackHost });
+  if (!fence.ok) {
+    sendBridge(fence.status, {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: false,
+      error: { code: fence.code, message: fence.message }
+    });
+    return;
+  }
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff"
+    });
+    res.end();
+    return;
+  }
+  const providedToken = extractBridgeTokenFromHeaders(req.headers);
+  if (!verifyBridgeTokenConstantTime(providedToken, bridgeToken)) {
+    sendBridge(
+      401,
+      {
+        protocol: BRIDGE_PROTOCOL_VERSION,
+        ok: false,
+        error: { code: "unauthorized", message: "\u7F3A\u5C11\u6216\u65E0\u6548\u7684\u6865\u63A5\u8BA4\u8BC1\u4EE4\u724C" }
+      },
+      { "www-authenticate": 'Bearer realm="ai-tasks-mgr-bridge-v1"' }
+    );
+    return;
+  }
+  const prefix = url.pathname.startsWith("/api/bridge") ? "/api/bridge" : "/bridge";
+  const subPath = url.pathname.slice(prefix.length) || "/";
+  if (subPath !== "/v1" && !subPath.startsWith("/v1/")) {
+    sendBridge(400, {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: false,
+      error: { code: "incompatible", message: `\u4E0D\u652F\u6301\u7684\u6865\u63A5\u534F\u8BAE\u8DEF\u5F84\uFF1A${subPath}\uFF08\u4EC5\u652F\u6301 /v1\uFF09` }
+    });
+    return;
+  }
+  const routePath = subPath.slice("/v1".length) || "/";
+  const idempotencyKey = typeof req.headers["idempotency-key"] === "string" ? req.headers["idempotency-key"].trim() : "";
+  const readBridgeJson = async () => {
+    let raw = "";
+    try {
+      raw = await readBody(req, BRIDGE_MAX_BODY_BYTES);
+    } catch (err) {
+      throw new BridgeApiError(413, "bad-request", err.message || "\u8BF7\u6C42\u4F53\u8FC7\u5927");
+    }
+    if (!raw.trim()) return {};
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new BridgeApiError(400, "bad-request", "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5 JSON");
+    }
+  };
+  try {
+    if (routePath === "/discovery" || routePath === "/health") {
+      if (req.method !== "GET") {
+        throw new BridgeApiError(405, "method-not-allowed", `${routePath} \u4EC5\u652F\u6301 GET \u8BF7\u6C42`);
+      }
+      const data = bridge.discovery({ base: `${prefix}/v1` });
+      sendBridge(200, data);
+      return;
+    }
+    if (routePath === "/ideas") {
+      if (req.method !== "POST") {
+        throw new BridgeApiError(405, "method-not-allowed", "/ideas \u4EC5\u652F\u6301 POST \u8BF7\u6C42");
+      }
+      const body = await readBridgeJson();
+      const data = await bridge.createIdea(body, { idempotencyKey });
+      sendBridge(200, data);
+      return;
+    }
+    const previewMatch = /^\/ideas\/([^/]+)\/start-preview$/.exec(routePath);
+    if (previewMatch) {
+      if (req.method !== "POST") {
+        throw new BridgeApiError(405, "method-not-allowed", "/ideas/:ideaId/start-preview \u4EC5\u652F\u6301 POST \u8BF7\u6C42");
+      }
+      const ideaId = decodeURIComponent(previewMatch[1]);
+      const body = await readBridgeJson();
+      const data = await bridge.previewStart(ideaId, body);
+      sendBridge(200, data);
+      return;
+    }
+    const startMatch = /^\/ideas\/([^/]+)\/start$/.exec(routePath);
+    if (startMatch) {
+      if (req.method !== "POST") {
+        throw new BridgeApiError(405, "method-not-allowed", "/ideas/:ideaId/start \u4EC5\u652F\u6301 POST \u8BF7\u6C42");
+      }
+      const ideaId = decodeURIComponent(startMatch[1]);
+      const body = await readBridgeJson();
+      const data = await bridge.startWork(ideaId, body, { idempotencyKey });
+      sendBridge(200, data);
+      return;
+    }
+    throw new BridgeApiError(404, "not-found", `\u672A\u5F00\u653E\u8BE5\u6865\u63A5\u7AEF\u70B9\uFF1A${routePath}\uFF08\u4EC5\u5F00\u653E\u53D7\u9650\u767D\u540D\u5355\u52A8\u4F5C\uFF09`);
+  } catch (err) {
+    if (err instanceof BridgeApiError) {
+      sendBridge(err.status, err.toEnvelope());
+      return;
+    }
+    sendBridge(500, {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: false,
+      error: {
+        code: "internal-error",
+        message: err?.message || "\u6865\u63A5\u670D\u52A1\u5185\u90E8\u9519\u8BEF"
+      }
+    });
+  }
+}
 var ACTIONS = new Set(AppApi.actions);
 async function startHttpApi(app, opts) {
+  const bridgeToken = (opts.bridgeToken ?? process.env.AITM_BRIDGE_TOKEN ?? "").trim() || crypto2.randomBytes(32).toString("base64url");
+  const allowNonLoopbackHost = Boolean(opts.host && !isLoopbackHostname(opts.host));
   const clients = /* @__PURE__ */ new Set();
   const unsubscribe = app.store.bus.subscribe((ev) => {
     opts.onEvent?.(ev);
@@ -11494,6 +12054,10 @@ async function startHttpApi(app, opts) {
   });
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    if (url.pathname === "/api/bridge" || url.pathname.startsWith("/api/bridge/") || url.pathname === "/bridge" || url.pathname.startsWith("/bridge/")) {
+      await handleBridgeRequest(req, res, url, app.bridge, bridgeToken, allowNonLoopbackHost);
+      return;
+    }
     const send = (code, body, headers = {}) => {
       res.writeHead(code, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*", ...headers });
       res.end(typeof body === "string" ? body : JSON.stringify(body));
@@ -11596,7 +12160,9 @@ async function startHttpApi(app, opts) {
   });
   server.on("close", () => unsubscribe());
   await new Promise((resolve) => server.listen(opts.port, opts.host ?? "127.0.0.1", resolve));
-  return server;
+  const withBridge = server;
+  withBridge.bridgeToken = bridgeToken;
+  return withBridge;
 }
 function readBody(req, maxBytes = 64 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -11617,6 +12183,26 @@ function readBody(req, maxBytes = 64 * 1024 * 1024) {
 }
 
 // src/web/l3.ts
+function createRestrictedBridgeFacade(bridge) {
+  const caps = Object.freeze([...BRIDGE_CAPABILITIES]);
+  return Object.freeze({
+    protocol: BRIDGE_PROTOCOL_VERSION,
+    service: BRIDGE_SERVICE_ID,
+    capabilities: caps,
+    async discovery(extra) {
+      return bridge.discovery(extra);
+    },
+    async createIdea(input, opts) {
+      return bridge.createIdea(input, opts);
+    },
+    async previewStart(ideaId, input) {
+      return bridge.previewStart(ideaId, input);
+    },
+    async startWork(ideaId, input, opts) {
+      return bridge.startWork(ideaId, input, opts);
+    }
+  });
+}
 async function createL3(opts = {}) {
   const home = path18.resolve(opts.home ?? process.env.AI_TASKS_HOME ?? path18.resolve(process.cwd(), ".aitasks"));
   const host = opts.host ?? "127.0.0.1";
@@ -11633,10 +12219,12 @@ async function createL3(opts = {}) {
   const server = await startHttpApi(app, {
     port: opts.port ?? 0,
     host,
-    staticDir: opts.staticDir ?? null
+    staticDir: opts.staticDir ?? null,
+    bridgeToken: opts.bridgeToken ?? null
   });
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
+  const restrictedBridge = createRestrictedBridgeFacade(app.bridge);
   const health = async () => {
     let info = {};
     try {
@@ -11660,6 +12248,8 @@ async function createL3(opts = {}) {
     base: `http://${host}:${port}`,
     port,
     home,
+    bridgeToken: server.bridgeToken,
+    bridge: restrictedBridge,
     async invoke(action, payload) {
       const result = await app.invoke(action, payload ?? {});
       if (!result?.ok) throw new Error(result?.error ?? `action ${action} \u5931\u8D25`);
@@ -11675,6 +12265,8 @@ async function createL3(opts = {}) {
   };
 }
 export {
-  createL3
+  BridgeApiError,
+  createL3,
+  createRestrictedBridgeFacade
 };
 //# sourceMappingURL=l3.mjs.map

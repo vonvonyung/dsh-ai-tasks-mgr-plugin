@@ -2186,6 +2186,73 @@ async function checkDsh() {
     `HTTP ${cfgRes.status} seam=${JSON.stringify(cfgJson?.hostSeam ?? null).slice(0, 130)}`,
   );
 
+  /* ③‴ 受限、版本化桥接 API（/aitm-plugin/bridge/v1/*）：
+     - 无 DSH 会话 Cookie 且无 Bearer 令牌 → 401（绝不靠 CORS: * 裸奔）
+     - 跨源 Origin → 403
+     - 携带真实 DSH 会话 Cookie → 200，发现响应不含 repo/log/dataDir，且按 sourceRef 幂等建想法 */
+  const bridgeUnauth = await fetch(`http://127.0.0.1:${port}/aitm-plugin/bridge/v1/discovery`);
+  const bridgeUnauthJson = await bridgeUnauth.json().catch(() => null);
+  const bridgeCross = await fetch(`http://127.0.0.1:${port}/aitm-plugin/bridge/v1/discovery`, {
+    headers: { cookie, origin: 'https://evil.example.com' },
+  });
+  const bridgeDisc = await fetch(`http://127.0.0.1:${port}/aitm-plugin/bridge/v1/discovery`, {
+    headers: { cookie },
+  });
+  const bridgeDiscJson = await bridgeDisc.json().catch(() => null);
+  check(
+    '③‴ 受限桥接发现端点：强制 DSH 会话/令牌认证 + 拒跨源 + 不泄露内部诊断路径',
+    bridgeUnauth.status === 401 &&
+      bridgeUnauthJson?.error?.code === 'unauthorized' &&
+      bridgeUnauth.headers.get('access-control-allow-origin') === null &&
+      bridgeCross.status === 403 &&
+      bridgeDisc.status === 200 &&
+      bridgeDiscJson?.protocol === 1 &&
+      bridgeDiscJson?.service === 'ai-tasks-mgr' &&
+      Array.isArray(bridgeDiscJson?.capabilities) &&
+      bridgeDiscJson?.repo === undefined &&
+      bridgeDiscJson?.dataDir === undefined &&
+      bridgeDiscJson?.log === undefined,
+    `unauth=${bridgeUnauth.status} cross=${bridgeCross.status} disc=${bridgeDisc.status} caps=${JSON.stringify(bridgeDiscJson?.capabilities ?? [])}`,
+  );
+
+  const bridgeIdea1 = await fetch(`http://127.0.0.1:${port}/aitm-plugin/bridge/v1/ideas`, {
+    method: 'POST',
+    headers: {
+      cookie,
+      'content-type': 'application/json',
+      'idempotency-key': 'dsh-todo:verify-bridge-1:idea',
+    },
+    body: JSON.stringify({
+      protocol: 1,
+      sourceRef: { plugin: 'dsh-todo', taskId: 'verify-bridge-1' },
+      title: 'DSH 桥接实机幂等验证',
+      note: '来自 verify-dsh 真实宿主桥接测试',
+      tags: ['bridge'],
+    }),
+  }).then((r) => r.json());
+  const bridgeIdea2 = await fetch(`http://127.0.0.1:${port}/aitm-plugin/bridge/v1/ideas`, {
+    method: 'POST',
+    headers: {
+      cookie,
+      'content-type': 'application/json',
+      'idempotency-key': 'dsh-todo:verify-bridge-1:idea',
+    },
+    body: JSON.stringify({
+      protocol: 1,
+      sourceRef: { plugin: 'dsh-todo', taskId: 'verify-bridge-1' },
+      title: '重复请求不应新建',
+    }),
+  }).then((r) => r.json());
+  check(
+    '③‴ 受限桥接按 sourceRef 幂等创建想法（首次 created=true，重复 created=false 且同 ideaId）',
+    bridgeIdea1?.protocol === 1 &&
+      bridgeIdea1?.created === true &&
+      typeof bridgeIdea1?.ideaId === 'string' &&
+      bridgeIdea2?.created === false &&
+      bridgeIdea2?.ideaId === bridgeIdea1?.ideaId,
+    `first=${JSON.stringify(bridgeIdea1)} second=${JSON.stringify(bridgeIdea2)}`,
+  );
+
   /*
    * ③' 我们 inject 的每个服务都必须真的有人提供。
    * 这条是给 R9 白屏上保险：客户端插件 `inject` 里写了一个**永远不会到的服务名**，DSH 不会报错，

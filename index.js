@@ -205,6 +205,8 @@ const state = {
   l3Mtime: 0,
   /** 进程内 L3 当前绑定的回环端口（热重载时优先复用同一端口，避免已打开的面板 iframe 断连） */
   l3Port: 0,
+  /** 受限桥接 API（/api/bridge/v1/* 与 /aitm-plugin/bridge/v1/*）的进程内 Bearer 令牌 */
+  bridgeToken: (process.env.AITM_BRIDGE_TOKEN ?? '').trim() || crypto.randomBytes(32).toString('base64url'),
   /** 正在热重载时的互斥 Promise */
   reloading: null,
   /** cordis 的 ctx（apply 时记下）：起内核时用它现取子进程接缝 */
@@ -1330,6 +1332,7 @@ export async function reloadL3(opts = {}) {
         version: pluginVersion(),
         spawn: seam.spawn,
         hostSession: sessionSeam.hostSession,
+        bridgeToken: state.bridgeToken,
         reloadL3: async () => {
           setTimeout(() => {
             void reloadL3({ force: true }).catch(() => undefined);
@@ -1350,6 +1353,7 @@ export async function reloadL3(opts = {}) {
       }
       const h = await nextL3.health();
       state.l3 = nextL3;
+      if (nextL3.bridgeToken) state.bridgeToken = nextL3.bridgeToken;
       state.l3Mtime = diskMtime || Date.now();
       state.l3Port = nextL3.port || prevPort;
       state.base = nextL3.base;
@@ -1384,6 +1388,38 @@ async function maybeHotReloadL3() {
   }
 }
 
+/** 校验主机名是否为本机回环地址（127.0.0.1 / localhost / ::1 / 127.x.x.x） */
+export function isLoopbackHost(hostname) {
+  if (typeof hostname !== 'string') return false;
+  const h = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
+/**
+ * 校验 AITM_URL 地址范围：默认仅允许 http/https 本机回环地址，防止桥接与插件把令牌或操作发往远端不可信地址。
+ * 若确需连接远程地址，须显式设置 AITM_ALLOW_REMOTE_URL=1。
+ */
+export function validateAitmUrl(rawUrl, env = process.env) {
+  const trimmed = String(rawUrl ?? '').trim().replace(/\/+$/, '');
+  if (!trimmed) throw new Error('AITM_URL 不能为空');
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`AITM_URL 不是合法的 URL：${trimmed}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`AITM_URL 协议不受支持：${parsed.protocol}（仅允许 http: 或 https:）`);
+  }
+  const allowRemote = String(env?.AITM_ALLOW_REMOTE_URL ?? '') === '1';
+  if (!allowRemote && !isLoopbackHost(parsed.hostname)) {
+    throw new Error(
+      `AITM_URL 地址超出允许范围：${trimmed}（默认仅允许 127.0.0.1 / localhost / [::1] 回环地址；确需连接远程地址请显式设置 AITM_ALLOW_REMOTE_URL=1）`,
+    );
+  }
+  return trimmed;
+}
+
 /** 调一个 action：进程内 L3 直连内核；外部后端（AITM_URL）/旧桥走 POST /api/<action> */
 async function call(action, payload = {}) {
   const base = await ensureBase();
@@ -1407,10 +1443,12 @@ async function httpCall(base, action, payload = {}) {
 /** 确保有一个可用后端：AITM_URL 优先；否则按需拉起（同一进程内只拉一次） */
 export async function ensureBase() {
   if (DEFAULTS.url) {
+    const safeUrl = validateAitmUrl(DEFAULTS.url);
     if (!state.base) {
-      const h = await health(DEFAULTS.url, 3000);
-      if (h?.ok && !compatible(h)) throw incompatibleError(DEFAULTS.url, h, 'AITM_URL');
-      state.base = DEFAULTS.url;
+      const h = await health(safeUrl, 3000);
+      if (h?.ok && !compatible(h)) throw incompatibleError(safeUrl, h, 'AITM_URL');
+      state.mode = 'external';
+      state.base = safeUrl;
       state.identity = backendId(h);
     }
     return state.base;
@@ -1475,6 +1513,7 @@ export async function ensureBase() {
         spawn: seam.spawn,
         // 有 ctx.agents / ctx.sessionQuery 就打通 P1 只读镜像 + P2 进程内借道投递
         hostSession: sessionSeam.hostSession,
+        bridgeToken: state.bridgeToken,
         reloadL3: async () => {
           setTimeout(() => {
             void reloadL3({ force: true }).catch(() => undefined);
@@ -1489,6 +1528,7 @@ export async function ensureBase() {
       const h = await l3.health();
       if (!compatible(h)) throw incompatibleError(l3.base, h, vendored ? '自带内核' : '进程内 L3');
       state.l3 = l3;
+      if (l3.bridgeToken) state.bridgeToken = l3.bridgeToken;
       state.l3Mtime = diskMtime;
       state.l3Port = l3.port || 0;
       state.mode = vendored ? 'vendor' : 'l3';
@@ -1582,10 +1622,366 @@ export async function ensureBase() {
   }
 }
 
-export { stop };
+/* ───────────────────────── 受限、版本化的跨插件桥接服务（Bridge v1） ───────────────────────── */
+
+const BRIDGE_PROTOCOL_VERSION = 1;
+const BRIDGE_SERVICE_ID = 'ai-tasks-mgr';
+const BRIDGE_CAPABILITIES = Object.freeze(['idea.create', 'idea.start-preview', 'idea.start']);
+const BRIDGE_ROUTE_BASE = '/aitm-plugin/bridge/v1';
+const BRIDGE_MAX_BODY_BYTES = 64 * 1024;
+
+class PluginBridgeError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.name = 'PluginBridgeError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function constantTimeTokenMatch(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
+  const p = provided.trim();
+  const e = expected.trim();
+  if (!p || !e) return false;
+  const a = Buffer.from(p, 'utf8');
+  const b = Buffer.from(e, 'utf8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function extractBridgeTokenFromHeaders(headers = {}) {
+  const auth = typeof headers.authorization === 'string' ? headers.authorization.trim() : '';
+  if (/^bearer\s+/i.test(auth)) {
+    return auth.replace(/^bearer\s+/i, '').trim();
+  }
+  const custom = headers['x-aitm-bridge-token'];
+  if (typeof custom === 'string') return custom.trim();
+  return '';
+}
+
+async function externalBridgeHttp(base, method, subPath, body, opts = {}) {
+  const safeBase = validateAitmUrl(base);
+  const headers = {
+    accept: 'application/json',
+    authorization: `Bearer ${state.bridgeToken}`,
+  };
+  if (opts.idempotencyKey) {
+    headers['idempotency-key'] = String(opts.idempotencyKey).trim();
+  }
+  if (body !== undefined) {
+    headers['content-type'] = 'application/json';
+  }
+  const res = await fetch(`${safeBase}/api/bridge/v1${subPath}`, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const code = data?.error?.code || `http-${res.status}`;
+    const msg = data?.error?.message || `HTTP ${res.status}`;
+    throw new PluginBridgeError(res.status, code, msg);
+  }
+  return data;
+}
+
+/**
+ * 面向兄弟插件（如 dsh-todo-aitm-bridge）的受限、版本化宿主桥接门面。
+ *
+ * 安全约束：
+ *  1. 只开放 4 个明确动作（discovery / createIdea / previewStart / startWork），绝不提供任意 action 转发；
+ *  2. 返回冻结门面，不暴露或复制 state.l3、AppApi、Store、仓库物理路径、日志或密钥。
+ */
+export function createHostBridgeService() {
+  return Object.freeze({
+    protocol: BRIDGE_PROTOCOL_VERSION,
+    service: BRIDGE_SERVICE_ID,
+    capabilities: BRIDGE_CAPABILITIES,
+    async discovery() {
+      const base = await ensureBase();
+      await maybeHotReloadL3();
+      if (state.l3?.bridge) {
+        return state.l3.bridge.discovery({ base: BRIDGE_ROUTE_BASE });
+      }
+      const data = await externalBridgeHttp(base, 'GET', '/discovery');
+      return {
+        protocol: BRIDGE_PROTOCOL_VERSION,
+        ok: true,
+        service: BRIDGE_SERVICE_ID,
+        version: data?.version ?? state.identity?.version ?? pluginVersion(),
+        apiRev: data?.apiRev ?? state.identity?.apiRev ?? REQUIRED_API_REV,
+        base: BRIDGE_ROUTE_BASE,
+        capabilities: BRIDGE_CAPABILITIES,
+      };
+    },
+    async createIdea(payload, opts = {}) {
+      const base = await ensureBase();
+      await maybeHotReloadL3();
+      if (state.l3?.bridge) {
+        return state.l3.bridge.createIdea(payload, opts);
+      }
+      return externalBridgeHttp(base, 'POST', '/ideas', payload ?? {}, opts);
+    },
+    async previewStart(ideaId, payload = {}) {
+      const id = typeof ideaId === 'string' ? ideaId.trim() : '';
+      if (!id) throw new PluginBridgeError(400, 'invalid-idea', '缺少想法 ID');
+      const base = await ensureBase();
+      await maybeHotReloadL3();
+      if (state.l3?.bridge) {
+        return state.l3.bridge.previewStart(id, payload);
+      }
+      return externalBridgeHttp(base, 'POST', `/ideas/${encodeURIComponent(id)}/start-preview`, payload ?? {});
+    },
+    async startWork(ideaId, payload = {}, opts = {}) {
+      const id = typeof ideaId === 'string' ? ideaId.trim() : '';
+      if (!id) throw new PluginBridgeError(400, 'invalid-idea', '缺少想法 ID');
+      const base = await ensureBase();
+      await maybeHotReloadL3();
+      if (state.l3?.bridge) {
+        return state.l3.bridge.startWork(id, payload, opts);
+      }
+      return externalBridgeHttp(base, 'POST', `/ideas/${encodeURIComponent(id)}/start`, payload ?? {}, opts);
+    },
+  });
+}
+
+const hostBridge = createHostBridgeService();
+
+/**
+ * 校验桥接 HTTP 请求的 Host / Origin / Sec-Fetch-Site 与认证凭据：
+ *  1. 绝不返回 Access-Control-Allow-Origin: *；
+ *  2. 拒绝 Sec-Fetch-Site: cross-site、Origin: null、跨源 Origin 与非回环 Host；
+ *  3. 要求携带有效的 Bearer 桥接令牌，或通过 DSH 宿主的 `connection.admit(req)` 会话认证。
+ */
+export function authenticatePluginBridgeRequest(req, ctx = state.ctx) {
+  const headers = req?.headers ?? {};
+  const hostHeader = typeof headers.host === 'string' ? headers.host.trim() : '';
+  if (hostHeader) {
+    let parsedHost = '';
+    try {
+      parsedHost = new URL(`http://${hostHeader}`).hostname;
+    } catch {
+      return { ok: false, status: 403, code: 'forbidden-host', message: '非法的 Host 请求头' };
+    }
+    if (!isLoopbackHost(parsedHost)) {
+      return { ok: false, status: 403, code: 'forbidden-host', message: '桥接接口仅允许回环地址访问' };
+    }
+  }
+
+  const secFetchSite = typeof headers['sec-fetch-site'] === 'string' ? headers['sec-fetch-site'].trim().toLowerCase() : '';
+  if (secFetchSite === 'cross-site') {
+    return { ok: false, status: 403, code: 'forbidden-origin', message: '拒绝跨站请求（Sec-Fetch-Site: cross-site）' };
+  }
+
+  const origin = typeof headers.origin === 'string' ? headers.origin.trim() : '';
+  if (origin) {
+    if (origin === 'null') {
+      return { ok: false, status: 403, code: 'forbidden-origin', message: '拒绝匿名源请求（Origin: null）' };
+    }
+    let originHost = '';
+    try {
+      originHost = new URL(origin).host.toLowerCase();
+    } catch {
+      return { ok: false, status: 403, code: 'forbidden-origin', message: '非法的 Origin 请求头' };
+    }
+    if (!hostHeader || originHost !== hostHeader.toLowerCase()) {
+      return { ok: false, status: 403, code: 'forbidden-origin', message: '拒绝跨源请求（Origin 与 Host 不匹配）' };
+    }
+  }
+
+  const providedToken = extractBridgeTokenFromHeaders(headers);
+  const activeToken = state.l3?.bridgeToken || state.bridgeToken;
+  if (providedToken && constantTimeTokenMatch(providedToken, activeToken)) {
+    return { ok: true, mode: 'token' };
+  }
+
+  const connection = hostService(ctx, 'connection');
+  if (connection && typeof connection.admit === 'function') {
+    const admission = connection.admit(req);
+    if (admission && !('rejection' in admission)) {
+      return { ok: true, mode: 'dsh-session' };
+    }
+    const status = admission?.rejection === 403 ? 403 : 401;
+    return {
+      ok: false,
+      status,
+      code: status === 403 ? 'forbidden' : 'unauthorized',
+      message: status === 403 ? '请求被 DSH 安全边界拒绝' : '未通过 DSH 浏览器会话或桥接令牌认证',
+    };
+  }
+
+  return {
+    ok: false,
+    status: 401,
+    code: 'unauthorized',
+    message: '缺少有效的桥接认证令牌或 DSH 会话凭据',
+  };
+}
+
+function readPluginJsonBody(req, maxBytes = BRIDGE_MAX_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      const buf = Buffer.isBuffer(c) ? c : Buffer.from(String(c));
+      size += buf.length;
+      if (size > maxBytes) {
+        reject(new PluginBridgeError(413, 'bad-request', '请求体过大'));
+        req.destroy?.();
+        return;
+      }
+      chunks.push(buf);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8').trim();
+      if (!raw) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        reject(new PluginBridgeError(400, 'bad-request', '请求体不是合法 JSON'));
+      }
+    });
+    req.on('error', (err) => reject(err));
+  });
+}
+
+async function handlePluginBridgeHttp(req, res, url, ctx = state.ctx) {
+  const sendBridge = (status, body, extraHeaders = {}) => {
+    res.writeHead(status, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+      ...extraHeaders,
+    });
+    res.end(JSON.stringify(body));
+  };
+
+  if (req.method === 'OPTIONS') {
+    const authCheck = authenticatePluginBridgeRequest(req, ctx);
+    if (!authCheck.ok && authCheck.status === 403) {
+      sendBridge(403, {
+        protocol: BRIDGE_PROTOCOL_VERSION,
+        ok: false,
+        error: { code: authCheck.code, message: authCheck.message },
+      });
+      return true;
+    }
+    res.writeHead(204, {
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    res.end();
+    return true;
+  }
+
+  const auth = authenticatePluginBridgeRequest(req, ctx);
+  if (!auth.ok) {
+    sendBridge(
+      auth.status,
+      {
+        protocol: BRIDGE_PROTOCOL_VERSION,
+        ok: false,
+        error: { code: auth.code, message: auth.message },
+      },
+      auth.status === 401 ? { 'www-authenticate': 'Bearer realm="ai-tasks-mgr-bridge-v1"' } : {},
+    );
+    return true;
+  }
+
+  const subPath = url.pathname.slice('/aitm-plugin/bridge'.length) || '/';
+  if (subPath !== '/v1' && !subPath.startsWith('/v1/')) {
+    sendBridge(400, {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: false,
+      error: { code: 'incompatible', message: `不支持的桥接协议路径：${subPath}（仅支持 /v1）` },
+    });
+    return true;
+  }
+
+  const routePath = subPath.slice('/v1'.length) || '/';
+  const idempotencyKey =
+    typeof req.headers?.['idempotency-key'] === 'string' ? req.headers['idempotency-key'].trim() : '';
+
+  try {
+    if (routePath === '/discovery' || routePath === '/health') {
+      if (req.method !== 'GET') {
+        throw new PluginBridgeError(405, 'method-not-allowed', `${routePath} 仅支持 GET 请求`);
+      }
+      const data = await hostBridge.discovery();
+      sendBridge(200, data);
+      return true;
+    }
+
+    if (routePath === '/ideas') {
+      if (req.method !== 'POST') {
+        throw new PluginBridgeError(405, 'method-not-allowed', '/ideas 仅支持 POST 请求');
+      }
+      const body = await readPluginJsonBody(req);
+      const data = await hostBridge.createIdea(body, { idempotencyKey });
+      sendBridge(200, data);
+      return true;
+    }
+
+    const previewMatch = /^\/ideas\/([^/]+)\/start-preview$/.exec(routePath);
+    if (previewMatch) {
+      if (req.method !== 'POST') {
+        throw new PluginBridgeError(405, 'method-not-allowed', '/ideas/:ideaId/start-preview 仅支持 POST 请求');
+      }
+      const ideaId = decodeURIComponent(previewMatch[1]);
+      const body = await readPluginJsonBody(req);
+      const data = await hostBridge.previewStart(ideaId, body);
+      sendBridge(200, data);
+      return true;
+    }
+
+    const startMatch = /^\/ideas\/([^/]+)\/start$/.exec(routePath);
+    if (startMatch) {
+      if (req.method !== 'POST') {
+        throw new PluginBridgeError(405, 'method-not-allowed', '/ideas/:ideaId/start 仅支持 POST 请求');
+      }
+      const ideaId = decodeURIComponent(startMatch[1]);
+      const body = await readPluginJsonBody(req);
+      const data = await hostBridge.startWork(ideaId, body, { idempotencyKey });
+      sendBridge(200, data);
+      return true;
+    }
+
+    throw new PluginBridgeError(404, 'not-found', `未开放该桥接端点：${routePath}（仅开放受限白名单动作）`);
+  } catch (err) {
+    const status = typeof err?.status === 'number' ? err.status : 500;
+    const code = typeof err?.code === 'string' ? err.code : 'internal-error';
+    const message = String(err?.message ?? err ?? '桥接服务内部错误');
+    sendBridge(status, {
+      protocol: BRIDGE_PROTOCOL_VERSION,
+      ok: false,
+      error: { code, message },
+    });
+    return true;
+  }
+}
+
+export { stop, hostBridge as bridge };
 
 /** 离线自检用的钩子（verify-dsh 拿假 subprocess / session 服务把适配层过一遍） */
-export const __hostHelpers = { makeSubprocessSpawner, pickHostSpawn, makeHostSessionSeam, pickHostSession, hostService, hostSeamDiagnosis, reloadL3 };
+export const __hostHelpers = {
+  makeSubprocessSpawner,
+  pickHostSpawn,
+  makeHostSessionSeam,
+  pickHostSession,
+  hostService,
+  hostSeamDiagnosis,
+  reloadL3,
+  isLoopbackHost,
+  validateAitmUrl,
+  createHostBridgeService,
+  authenticatePluginBridgeRequest,
+  handlePluginBridgeHttp,
+  getBridgeToken: () => state.l3?.bridgeToken || state.bridgeToken,
+};
 
 /** 诊断用：把「插件眼里的世界」原样抖出来（scripts/doctor.mjs 用；也让 verify 能断言自检逻辑） */
 export function diagnose() {
@@ -1798,6 +2194,13 @@ export function apply(ctx) {
   // 子进程缝要**懒取**（ctx.subprocess 可能是后提供的），这里只留个引用给 ensureBase
   state.ctx = ctx;
 
+  // 向 Cordis 共享服务表提供受限、版本化的 `aitmBridge` 服务（兄弟插件可通过 ctx.get('aitmBridge') 或 ctx.inject(['aitmBridge']) 调用）
+  try {
+    ctx.provide?.('aitmBridge', hostBridge);
+  } catch {
+    /* 测试桩或重复挂载时忽略 */
+  }
+
   /* -------- ③ 给浏览器半边递地址（客户端在浏览器里，看不见 Node 环境变量） -------- */
   ctx.inject?.(['webServer'], (webCtx) => {
     webCtx.effect(() => {
@@ -1805,7 +2208,10 @@ export function apply(ctx) {
         kind: 'prefix',
         path: '/aitm-plugin',
         handler: async (req, res) => {
-          const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+          const url = new URL(req.url ?? '/', `http://${req.headers?.host ?? '127.0.0.1'}`);
+          if (url.pathname === '/aitm-plugin/bridge' || url.pathname.startsWith('/aitm-plugin/bridge/')) {
+            return handlePluginBridgeHttp(req, res, url, state.ctx);
+          }
           if (url.pathname === '/aitm-plugin/reload') {
             try {
               await ensureBase();

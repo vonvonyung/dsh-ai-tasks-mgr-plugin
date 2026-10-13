@@ -70,7 +70,7 @@ npx -y @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add https://github.com/v
 
    ```bash
    node scripts/vendor-plugin.mjs        # 构建 + 拷内核/面板产物进 dsh-plugin/ + npm pack
-   # → release/dsh-plugin-aitm-0.3.47.tgz（脚本会核对包内容：缺内核/面板产物会直接报错）
+   # → release/dsh-plugin-aitm-0.3.48.tgz（脚本会核对包内容：缺内核/面板产物会直接报错）
    ```
 
 2. **同事那台机器**：
