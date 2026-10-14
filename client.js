@@ -3992,6 +3992,93 @@ window.__ModuleLoader__.load({
       ] }, 'clickpref');
     }
 
+    function AitmDshModelPref({ base }) {
+      const [state, setState] = react.useState(null);
+      const [busy, setBusy] = react.useState(false);
+      const [msg, setMsg] = react.useState('');
+      const load = react.useCallback(() => {
+        if (!base) return;
+        void postAction(base, 'engines.dshModels', {})
+          .then((res) => {
+            if (res && res.current) setState(res);
+          })
+          .catch(() => undefined);
+      }, [base]);
+      react.useEffect(() => {
+        load();
+      }, [load]);
+      if (!base || !state) return null;
+      const curVal = `${state.current.provider}/${state.current.model}`;
+      const apply = (payload, okMsg) => {
+        setBusy(true);
+        setMsg('');
+        void postAction(base, 'engines.setDshModel', payload)
+          .then((res) => {
+            if (res?.state) setState(res.state);
+            setMsg(okMsg || `✓ 已切换为 ${res?.state?.current?.provider}/${res?.state?.current?.model}`);
+          })
+          .catch((e) => setMsg(`✗ ${e?.message || String(e)}`))
+          .finally(() => setBusy(false));
+      };
+      return jsx.jsxs('div', { 'data-dsh-model-pref': '1', style: { marginTop: 10, fontSize: 12.5 }, children: [
+        jsx.jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }, children: [
+          jsx.jsx('span', { style: { opacity: 0.7 }, children: 'dsh headless 模型：' }, 'label'),
+          jsx.jsx(
+            'select',
+            {
+              'aria-label': '选择 dsh headless 模型',
+              disabled: busy,
+              value: curVal,
+              style: { fontSize: 12, padding: '3px 6px', borderRadius: 6, maxWidth: 320 },
+              onChange: (e) => apply({ model: e.target.value }),
+              children: (state.options || []).map((o) =>
+                jsx.jsx('option', { value: o.value, children: `${o.providerLabel} · ${o.modelLabel}` }, o.value),
+              ),
+            },
+            'sel',
+          ),
+          state.guiSelection
+            ? jsx.jsx(
+                'button',
+                {
+                  type: 'button',
+                  disabled: busy,
+                  style: { ...FEED.btn, fontSize: 11.5, padding: '2px 8px' },
+                  onClick: () =>
+                    apply(
+                      { syncFromProfile: state.guiSelection.profile },
+                      `✓ 已同步 DSH ${state.guiSelection.profile} 模型 (${state.guiSelection.provider}/${state.guiSelection.model})`,
+                    ),
+                  children: `与 DSH 界面同步 (${state.guiSelection.provider}/${state.guiSelection.model})`,
+                },
+                'sync',
+              )
+            : null,
+          jsx.jsx(
+            'button',
+            {
+              type: 'button',
+              disabled: busy,
+              style: { ...FEED.btn, fontSize: 11.5, padding: '2px 8px' },
+              onClick: load,
+              children: '刷新',
+            },
+            'refresh',
+          ),
+        ] }, 'row'),
+        jsx.jsx(
+          'div',
+          {
+            style: { opacity: 0.65, fontSize: 11.5, marginTop: 3 },
+            children:
+              msg ||
+              `当前生效：${curVal}${state.current.source === 'default' ? '（默认）' : '（已写入 profiles/headless/cordis.patch.yml）'}`,
+          },
+          'hint',
+        ),
+      ] }, 'dshmodelpref');
+    }
+
     function AitmSection() {
       const [cfg, reload] = useAitmConfig();
       const row = (k, v) =>
@@ -4058,6 +4145,7 @@ window.__ModuleLoader__.load({
           : null,
         jsx.jsx('p', { style: { fontSize: 12, opacity: 0.7, marginTop: 8 }, children: '环境变量：AITM_REPO（仓库路径）/ AITM_URL（连已有实例）/ AITM_SPAWN=0（只连不起）/ AITM_SUBPROCESS=0（不让宿主托管 CLI 进程）。改完重启 DSH 客户端。' }, 'hint'),
         jsx.jsx(AitmClickPref, {}, 'clickpref'),
+        jsx.jsx(AitmDshModelPref, { base: cfg.base }, 'dshmodelpref'),
         jsx.jsx('a', { style: { fontSize: 12, textDecoration: 'underline', cursor: 'pointer' }, onClick: reload, children: '重新检查' }, 'reload'),
       ] });
     }
